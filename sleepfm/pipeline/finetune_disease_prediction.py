@@ -10,8 +10,8 @@ import os
 from datetime import datetime
 import sys
 sys.path.append("../")
-from utils import *
-from models.models import DiagnosisFinetuneFullLSTMCOXPH, DiagnosisFinetuneFullLSTMCOXPHWithDemo, DiagnosisFinetuneDemoOnlyEmbed
+from sleepfm.utils import *
+from sleepfm.models.models import DiagnosisFinetuneFullLSTMCOXPH, DiagnosisFinetuneFullLSTMCOXPHWithDemo, DiagnosisFinetuneDemoOnlyEmbed
 from tqdm import tqdm
 import pandas as pd
 from torch.cuda.amp import autocast, GradScaler
@@ -49,11 +49,19 @@ def cox_ph_loss(hazards, event_times, is_event):
 
 
 @click.command("finetune_diagnosis")
-@click.option("--config_path", type=str, default='../configs/config_finetune_disease_prediction.yaml')
-@click.option("--channel_groups_path", type=str, default='../configs/channel_groups.json')
+@click.option("--config_path", type=str, default=None)
+@click.option("--channel_groups_path", type=str, default=None)
 @click.option("--checkpoint_path", type=str, default=None)
 @click.option("--split_path", type=str, default=None)
 def finetune_diagnosis(config_path, channel_groups_path, checkpoint_path, split_path):
+    # Resolve paths relative to the script's directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if config_path is None:
+        config_path = os.path.join(script_dir, "../configs/config_finetune_disease_prediction.yaml")
+    if channel_groups_path is None:
+        channel_groups_path = os.path.join(script_dir, "../configs/channel_groups.json")
+
     # Load configuration
     config = load_config(config_path)
     channel_groups = load_data(channel_groups_path)
@@ -198,7 +206,7 @@ def finetune_diagnosis(config_path, channel_groups_path, checkpoint_path, split_
         model.train()
         running_loss = 0.0
         for i, item in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")):
-            if model_name in ["DiagnosisFinetuneFullLSTMCOXPHWithDemo""]:
+            if model_name in ["DiagnosisFinetuneFullLSTMCOXPHWithDemo"]:
                 x_data, event_times, is_event, demo_feats, padded_matrix, hdf5_path_list = item
                 x_data, event_times, is_event, demo_feats, padded_matrix, hdf5_path_list = x_data.to(device), event_times.to(device), is_event.to(device), demo_feats.to(device), padded_matrix.to(device), list(hdf5_path_list)
                 hazards = model(x_data, padded_matrix, demo_feats)
