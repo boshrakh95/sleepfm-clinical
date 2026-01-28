@@ -58,6 +58,11 @@ class STAGEStoSleepFMConverter:
         self.input_base = Path(self.config['input']['base_dir'])
         self.output_base = Path(self.config['output']['base_dir'])
         self.hdf5_output = self.output_base / self.config['output']['hdf5_dir']
+        self.quality_output = self.output_base / 'quality_metadata'
+        self.quality_output.mkdir(parents=True, exist_ok=True)
+        
+        # Master masks directory
+        self.master_masks_dir = self.input_base / 'master_masks'
         
         # Statistics
         self.stats = {
@@ -70,6 +75,11 @@ class STAGEStoSleepFMConverter:
     
     def load_config(self, config_path: str) -> Dict:
         """Load YAML configuration file."""
+        # Resolve relative to script directory if not absolute
+        config_path = Path(config_path)
+        if not config_path.is_absolute():
+            config_path = Path(__file__).parent / config_path
+        
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         return config
@@ -195,6 +205,47 @@ class STAGEStoSleepFMConverter:
         
         return None
     
+    def load_normalization_stats(self, subject_id: str, channel_name: str) -> Optional[Dict]:
+        """Load normalization statistics from JSON file."""
+        # Determine which directory to look in
+        dir_mapping = {
+            'eeg': 'eeg_dir',
+            'eog': 'eog_dir',
+            'ecg': 'ecg_dir',
+            'resp': 'respiratory_dir',
+            'emg': 'emg_dir'
+        }
+        
+        # Try to find the normstats file
+        for dir_key in dir_mapping.values():
+            stats_path = self.input_base / self.config['input'][dir_key] / subject_id / f"{channel_name}_normstats.json"
+            
+            if stats_path.exists():
+                try:
+                    with open(stats_path, 'r') as f:
+                        normstats = json.load(f)
+                    return normstats['normalization_stats']
+                except Exception as e:
+                    logger.error(f"Error loading {stats_path}: {e}")
+                    return None
+        
+        return None
+    
+    def load_master_mask(self, subject_id: str) -> Optional[np.ndarray]:
+        """Load master exclusion mask (True=artifact, False=clean)."""
+        mask_path = self.master_masks_dir / f"{subject_id}_master_exclusion_mask.npy"
+        
+        if mask_path.exists():
+            try:
+                mask = np.load(mask_path)
+                return mask
+            except Exception as e:
+                logger.error(f"Error loading mask {mask_path}: {e}")
+                return None
+        else:
+            logger.warning(f"Master mask not found for {subject_id}")
+            return None
+    
     def concatenate_segments(self, segmented_data: np.ndarray) -> np.ndarray:
         """Concatenate 30-sec segments into continuous signal.
         
@@ -211,6 +262,27 @@ class STAGEStoSleepFMConverter:
             continuous = segmented_data
         
         return continuous
+    
+    def apply_normalization(self, signal_data: np.ndarray, normstats: Dict) -> np.ndarray:
+        """Apply artifact-aware normalization using pre-computed stats.
+        
+        Args:
+            signal_data: Raw signal data
+            normstats: Dict with 'mean' and 'std' computed on clean segments
+        
+        Returns:
+            Normalized signal (z-score)
+        """
+        mean = normstats['mean']
+        std = normstats['std']
+        
+        if std == 0 or np.isnan(std):
+            logger.warning(f"Invalid std ({std}), using std=1.0")
+            std = 1.0
+        
+        normalized = (signal_data - mean) / std
+        
+        return normalized
     
     def resample_signal(self, signal_data: np.ndarray) -> np.ndarray:
         """Resample signal from 100 Hz to 128 Hz.
@@ -268,20 +340,6 @@ class STAGEStoSleepFMConverter:
             if np.isinf(signal_data).any():
                 return False, f"Signal contains Inf values"
         
-        # Check normalization
-        if self.config['advanced']['verify_normalization']:
-            mean = np.mean(signal_data)
-            std = np.std(signal_data)
-            
-            mean_thresh = self.config['processing']['normalization_mean_threshold']
-            std_range = self.config['processing']['normalization_std_threshold']
-            
-            if abs(mean) > mean_thresh:
-                logger.warning(f"{channel_name}: Mean {mean:.3f} outside threshold ±{mean_thresh}")
-            
-            if not (std_range[0] <= std <= std_range[1]):
-                logger.warning(f"{channel_name}: Std {std:.3f} outside range {std_range}")
-        
         return True, ""
     
     def convert_subject(self, subject_id: str) -> bool:
@@ -294,6 +352,7 @@ class STAGEStoSleepFMConverter:
             True if successful, False otherwise
         """
         output_file = self.hdf5_output / f"{subject_id}.hdf5"
+        quality_file = self.quality_output / f"{subject_id}_quality.json"
         
         # Skip if exists and skip_existing is True
         if output_file.exists() and self.config['options']['skip_existing']:
@@ -304,6 +363,9 @@ class STAGEStoSleepFMConverter:
         logger.info(f"Processing subject: {subject_id}")
         
         try:
+            # Load master mask
+            master_mask = self.load_master_mask(subject_id)  # True=artifact, False=clean
+            
             # Collect all channels for this subject
             channels_data = {}
             
@@ -321,6 +383,16 @@ class STAGEStoSleepFMConverter:
                 # Concatenate segments
                 continuous = self.concatenate_segments(segmented)
                 
+                # Load normalization stats
+                normstats = self.load_normalization_stats(subject_id, original_name)
+                
+                if normstats is None:
+                    logger.warning(f"  {sleepfm_name}: normstats not found, skipping normalization")
+                else:
+                    # Apply artifact-aware normalization
+                    continuous = self.apply_normalization(continuous, normstats)
+                    logger.debug(f"  {sleepfm_name}: normalized with mean={normstats['mean']:.3f}, std={normstats['std']:.3f}")
+                
                 # Resample to 128 Hz
                 resampled = self.resample_signal(continuous)
                 
@@ -336,6 +408,13 @@ class STAGEStoSleepFMConverter:
             if not self.validate_modalities(channels_data):
                 logger.error(f"Subject {subject_id} missing required modalities")
                 return False
+            
+            # Save quality metadata
+            if master_mask is not None:
+                quality_metadata = self.create_quality_metadata(subject_id, master_mask, channels_data)
+                with open(quality_file, 'w') as f:
+                    json.dump(quality_metadata, f, indent=2)
+                logger.debug(f"  Saved quality metadata: {quality_metadata['clean_ratio']:.1%} clean")
             
             # Save to HDF5
             with h5py.File(output_file, 'w') as hf:
@@ -360,6 +439,59 @@ class STAGEStoSleepFMConverter:
             self.stats['failed'] += 1
             self.stats['errors'].append((subject_id, str(e)))
             return False
+    
+    def create_quality_metadata(self, subject_id: str, master_mask: np.ndarray, 
+                                channels_data: Dict[str, np.ndarray]) -> Dict:
+        """Create quality metadata JSON for a subject.
+        
+        Args:
+            subject_id: Subject ID
+            master_mask: Boolean array [720] where True=artifact, False=clean
+            channels_data: Dict of channel data at 128 Hz
+        
+        Returns:
+            Quality metadata dict
+        """
+        # Convert window-level mask to sample-level (at 128 Hz)
+        num_windows = len(master_mask)
+        samples_per_window_128hz = int(30 * self.target_sr)  # 30 sec at 128 Hz = 3840
+        
+        # Create sample-level mask
+        total_samples = num_windows * samples_per_window_128hz
+        sample_mask = np.zeros(total_samples, dtype=bool)
+        
+        for i, is_artifact in enumerate(master_mask):
+            start_idx = i * samples_per_window_128hz
+            end_idx = (i + 1) * samples_per_window_128hz
+            sample_mask[start_idx:end_idx] = is_artifact
+        
+        # Get clean/artifact windows
+        clean_windows = [int(i) for i, is_artifact in enumerate(master_mask) if not is_artifact]
+        artifact_windows = [int(i) for i, is_artifact in enumerate(master_mask) if is_artifact]
+        
+        # Calculate statistics
+        clean_ratio = len(clean_windows) / num_windows if num_windows > 0 else 0.0
+        
+        metadata = {
+            'subject_id': subject_id,
+            'total_windows': num_windows,
+            'clean_windows': clean_windows,
+            'artifact_windows': artifact_windows,
+            'num_clean_windows': len(clean_windows),
+            'num_artifact_windows': len(artifact_windows),
+            'clean_ratio': float(clean_ratio),
+            'window_duration_sec': 30,
+            'sampling_rate_hz': self.target_sr,
+            'total_duration_hours': num_windows * 30 / 3600,
+            'channels': list(channels_data.keys()),
+            'sample_level_quality': {
+                'total_samples': total_samples,
+                'clean_samples': int((~sample_mask).sum()),
+                'artifact_samples': int(sample_mask.sum())
+            }
+        }
+        
+        return metadata
     
     def validate_modalities(self, channels_data: Dict[str, np.ndarray]) -> bool:
         """Check if all required modalities are present."""

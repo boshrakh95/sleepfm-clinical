@@ -28,6 +28,11 @@ def test_single_subject(subject_id: str, config_path: str = "config_stages_conve
     print("="*80)
     print()
     
+    # Resolve config path relative to this script's directory
+    script_dir = Path(__file__).parent
+    if not Path(config_path).is_absolute():
+        config_path = script_dir / config_path
+    
     # Load config
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -39,8 +44,9 @@ def test_single_subject(subject_id: str, config_path: str = "config_stages_conve
     config['subjects']['include'] = [subject_id]
     config['options']['skip_existing'] = False  # Force re-conversion for testing
     
-    # Save temp config
-    temp_config_path = "temp_test_config.yaml"
+    # Save temp config in script directory
+    script_dir = Path(__file__).parent
+    temp_config_path = script_dir / "temp_test_config.yaml"
     with open(temp_config_path, 'w') as f:
         yaml.dump(config, f)
     
@@ -143,12 +149,17 @@ def test_single_subject(subject_id: str, config_path: str = "config_stages_conve
         
     finally:
         # Cleanup temp config
-        if Path(temp_config_path).exists():
-            Path(temp_config_path).unlink()
+        if temp_config_path.exists():
+            temp_config_path.unlink()
 
 
 def get_first_subject(config_path: str) -> str:
     """Get first available subject from EEG directory."""
+    # Resolve config path relative to this script's directory
+    script_dir = Path(__file__).parent
+    if not Path(config_path).is_absolute():
+        config_path = script_dir / config_path
+    
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     

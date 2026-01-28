@@ -22,6 +22,7 @@ import os
 import sys
 import argparse
 import yaml
+import json
 import h5py
 import numpy as np
 import pandas as pd
@@ -46,6 +47,7 @@ class STAGESDataValidator:
         self.input_base = Path(self.config['input']['base_dir'])
         self.output_base = Path(self.config['output']['base_dir'])
         self.hdf5_dir = self.output_base / self.config['output']['hdf5_dir']
+        self.quality_dir = self.output_base / 'quality_metadata'
         self.validation_dir = self.output_base / self.config['output']['validation_dir']
         self.validation_dir.mkdir(parents=True, exist_ok=True)
         
@@ -58,6 +60,11 @@ class STAGESDataValidator:
     
     def load_config(self, config_path: str) -> Dict:
         """Load YAML configuration."""
+        # Resolve relative to script directory if not absolute
+        config_path = Path(config_path)
+        if not config_path.is_absolute():
+            config_path = Path(__file__).parent / config_path
+        
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         return config
@@ -138,22 +145,49 @@ class STAGESDataValidator:
             'issues': []
         }
         
+        # Load quality metadata if available
+        subject_id = hdf5_path.stem
+        quality_file = self.quality_dir / f"{subject_id}_quality.json"
+        quality_metadata = None
+        if quality_file.exists():
+            with open(quality_file, 'r') as f:
+                quality_metadata = json.load(f)
+        
         try:
             with h5py.File(hdf5_path, 'r') as hf:
                 for channel_name in hf.keys():
                     channel_data = hf[channel_name][:]
                     
+                    # Calculate stats on clean segments only if quality metadata exists
+                    if quality_metadata is not None:
+                        clean_data = self.get_clean_segments(channel_data, quality_metadata)
+                        if len(clean_data) > 0:
+                            mean_val = float(np.mean(clean_data))
+                            std_val = float(np.std(clean_data))
+                            min_val = float(np.min(clean_data))
+                            max_val = float(np.max(clean_data))
+                        else:
+                            mean_val = std_val = min_val = max_val = np.nan
+                        computed_on_clean = True
+                    else:
+                        mean_val = float(np.mean(channel_data))
+                        std_val = float(np.std(channel_data))
+                        min_val = float(np.min(channel_data))
+                        max_val = float(np.max(channel_data))
+                        computed_on_clean = False
+                    
                     channel_result = {
                         'length': len(channel_data),
                         'duration_hours': len(channel_data) / self.expected_sr / 3600,
-                        'mean': float(np.mean(channel_data)),
-                        'std': float(np.std(channel_data)),
-                        'min': float(np.min(channel_data)),
-                        'max': float(np.max(channel_data)),
+                        'mean': mean_val,
+                        'std': std_val,
+                        'min': min_val,
+                        'max': max_val,
                         'has_nan': bool(np.isnan(channel_data).any()),
                         'has_inf': bool(np.isinf(channel_data).any()),
                         'num_zeros': int((channel_data == 0).sum()),
-                        'dtype': str(channel_data.dtype)
+                        'dtype': str(channel_data.dtype),
+                        'computed_on_clean': computed_on_clean
                     }
                     
                     result['channels'][channel_name] = channel_result
@@ -165,24 +199,59 @@ class STAGESDataValidator:
                     if channel_result['has_inf']:
                         result['issues'].append(f"{channel_name}: contains Inf values")
                     
-                    # Check normalization
-                    mean_thresh = self.config['processing']['normalization_mean_threshold']
-                    std_range = self.config['processing']['normalization_std_threshold']
-                    
-                    if abs(channel_result['mean']) > mean_thresh:
-                        result['issues'].append(
-                            f"{channel_name}: mean {channel_result['mean']:.3f} > {mean_thresh}"
-                        )
-                    
-                    if not (std_range[0] <= channel_result['std'] <= std_range[1]):
-                        result['issues'].append(
-                            f"{channel_name}: std {channel_result['std']:.3f} outside {std_range}"
-                        )
+                    # Check normalization (only if computed on clean segments)
+                    if computed_on_clean and not np.isnan(mean_val):
+                        mean_thresh = self.config['processing']['normalization_mean_threshold']
+                        std_range = self.config['processing']['normalization_std_threshold']
+                        
+                        if abs(mean_val) > mean_thresh:
+                            result['issues'].append(
+                                f"{channel_name}: mean {mean_val:.3f} > {mean_thresh}"
+                            )
+                        
+                        if not (std_range[0] <= std_val <= std_range[1]):
+                            result['issues'].append(
+                                f"{channel_name}: std {std_val:.3f} outside {std_range}"
+                            )
+                
+                # Add quality info
+                if quality_metadata is not None:
+                    result['quality'] = {
+                        'total_windows': quality_metadata['total_windows'],
+                        'clean_windows': quality_metadata['num_clean_windows'],
+                        'clean_ratio': quality_metadata['clean_ratio']
+                    }
         
         except Exception as e:
             result['issues'].append(f"Error validating signals: {e}")
         
         return result
+    
+    def get_clean_segments(self, signal_data: np.ndarray, quality_metadata: Dict) -> np.ndarray:
+        """Extract clean (non-artifact) segments from signal.
+        
+        Args:
+            signal_data: Full signal array at 128 Hz
+            quality_metadata: Quality metadata with clean/artifact windows
+        
+        Returns:
+            Array containing only clean segments
+        """
+        samples_per_window = int(30 * self.expected_sr)  # 30 sec at 128 Hz = 3840
+        clean_windows = quality_metadata['clean_windows']
+        
+        clean_segments = []
+        for window_idx in clean_windows:
+            start_idx = window_idx * samples_per_window
+            end_idx = (window_idx + 1) * samples_per_window
+            
+            if end_idx <= len(signal_data):
+                clean_segments.append(signal_data[start_idx:end_idx])
+        
+        if len(clean_segments) > 0:
+            return np.concatenate(clean_segments)
+        else:
+            return np.array([])
     
     def validate_subject(self, hdf5_path: Path, detailed: bool = False) -> Dict:
         """Validate a single subject's HDF5 file."""

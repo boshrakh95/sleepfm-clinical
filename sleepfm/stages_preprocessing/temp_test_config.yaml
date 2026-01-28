@@ -1,0 +1,126 @@
+advanced:
+  backup_logs: true
+  check_for_infs: true
+  check_for_nans: true
+  clear_cache_per_subject: true
+  verify_normalization: true
+channel_mapping:
+  ABDM: ABD
+  C3-M2: C3-M2
+  C4-M1: C4-M1
+  CHIN: CHIN
+  EKG: EKG
+  FLOW: Flow
+  LLEG: LLEG
+  LOC: EOG(L)
+  O1-M2: O1-M2
+  O2-M1: O2-M1
+  RLEG: RLEG
+  ROC: EOG(R)
+  THOR: Thor
+input:
+  base_dir: /home/boshra95/scratch/stages/stages/processed
+  cognitive_targets: cognitive_targets.csv
+  demographics: demographics_final.csv
+  ecg_dir: ecg_segmented
+  eeg_dir: eeg_segmented
+  emg_dir: emg_segmented
+  eog_dir: eog_segmented
+  respiratory_dir: respiratory_segmented
+  simple_channels: simple_channels.csv
+labels:
+  cognitive_scores:
+  - sustained_attention
+  - working_memory
+  - episodic_memory
+  - executive_functioning
+  - nback_working_memory_capacity
+  - nback_speed
+  - nback_accuracy
+  - nback_impulsivity
+  demographics_features:
+  - nsrr_age
+  - nsrr_sex
+  gender_encoding:
+    female: 0
+    male: 1
+  normalize_demographics: true
+  task_type: classification
+modalities:
+  BAS:
+    expected_channels:
+    - C3-M2
+    - C4-M1
+    - O1-M2
+    - O2-M1
+    - EOG(L)
+    - EOG(R)
+    min_channels: 1
+    required: true
+  EKG:
+    expected_channels:
+    - EKG
+    min_channels: 1
+    required: true
+  EMG:
+    expected_channels:
+    - CHIN
+    - RLEG
+    - LLEG
+    min_channels: 1
+    required: true
+  RESP:
+    expected_channels:
+    - Flow
+    - Thor
+    - ABD
+    min_channels: 1
+    required: true
+options:
+  batch_size: 1
+  detailed_validation_count: 5
+  num_workers: 8
+  resume: true
+  save_validation_plots: true
+  skip_existing: false
+  verbose: true
+output:
+  base_dir: /home/boshra95/scratch/stages/sleepfm_format
+  hdf5_dir: hdf5_data
+  labels_dir: labels
+  logs_dir: logs
+  splits_dir: splits
+  validation_dir: validation
+processing:
+  chunk_size: 38400
+  compression: gzip
+  compression_opts: 4
+  current_sample_rate: 100
+  dtype: float16
+  normalization_mean_threshold: 0.1
+  normalization_std_threshold:
+  - 0.8
+  - 1.2
+  resampling_method: linear
+  segment_duration: 30
+  segment_samples: 3000
+  target_sample_rate: 128
+split:
+  random_seed: 42
+  stratify_bins: 5
+  stratify_by: executive_functioning
+  test_ratio: 0.15
+  train_ratio: 0.7
+  val_ratio: 0.15
+subjects:
+  exclude: []
+  include:
+  - BOGN00004
+  min_channels_per_modality:
+    BAS: 2
+    EKG: 1
+    EMG: 1
+    RESP: 1
+  min_duration_hours: 4.0
+  pilot_count: 10
+  pilot_mode: false

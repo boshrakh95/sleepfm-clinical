@@ -48,6 +48,11 @@ class STAGESLabelPreparator:
     
     def load_config(self, config_path: str) -> Dict:
         """Load YAML configuration."""
+        # Resolve relative to script directory if not absolute
+        config_path = Path(config_path)
+        if not config_path.is_absolute():
+            config_path = Path(__file__).parent / config_path
+        
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         return config

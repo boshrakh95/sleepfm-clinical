@@ -27,6 +27,17 @@
             // ],
             "console": "integratedTerminal",
             "justMyCode": true
+            },
+        {
+            "name": "⭕️ Test single subject STAGES preprocessing",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_preprocessing/test_single_subject.py",
+            "args": [
+            "--auto"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
             }
     ]
 }
