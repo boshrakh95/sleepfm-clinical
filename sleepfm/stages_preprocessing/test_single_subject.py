@@ -14,6 +14,7 @@ Usage:
 import argparse
 import yaml
 import h5py
+import json
 import numpy as np
 from pathlib import Path
 from convert_to_hdf5 import STAGEStoSleepFMConverter
@@ -74,6 +75,18 @@ def test_single_subject(subject_id: str, config_path: str = "config_stages_conve
             print(f"❌ HDF5 file not found: {hdf5_path}")
             return False
         
+        # Load quality metadata
+        quality_path = Path(config['output']['base_dir']) / 'quality_metadata' / f"{subject_id}_quality.json"
+        quality_metadata = None
+        if quality_path.exists():
+            with open(quality_path, 'r') as f:
+                quality_metadata = json.load(f)
+            print(f"\n✓ Quality metadata found:")
+            print(f"  Clean ratio: {quality_metadata['clean_ratio']:.1%}")
+            print(f"  Clean windows: {quality_metadata['num_clean_windows']}/{quality_metadata['total_windows']}")
+        else:
+            print(f"\n⚠ Quality metadata not found (stats will include artifacts)")
+        
         # Display HDF5 structure
         print(f"\nHDF5 file: {hdf5_path}")
         print(f"File size: {hdf5_path.stat().st_size / (1024**2):.2f} MB")
@@ -90,12 +103,39 @@ def test_single_subject(subject_id: str, config_path: str = "config_stages_conve
                 
                 duration_hours = len(channel_data) / config['processing']['target_sample_rate'] / 3600
                 
+                # Calculate stats on clean segments only if quality metadata exists
+                if quality_metadata is not None:
+                    # Extract clean segments
+                    samples_per_window = int(30 * config['processing']['target_sample_rate'])
+                    clean_segments = []
+                    for win_idx in quality_metadata['clean_windows']:
+                        start_idx = win_idx * samples_per_window
+                        end_idx = (win_idx + 1) * samples_per_window
+                        if end_idx <= len(channel_data):
+                            clean_segments.append(channel_data[start_idx:end_idx])
+                    
+                    if clean_segments:
+                        clean_data = np.concatenate(clean_segments)
+                        # Use float32 to avoid overflow with float16 data
+                        mean_val = np.mean(clean_data.astype(np.float32))
+                        std_val = np.std(clean_data.astype(np.float32))
+                        computed_on = "clean"
+                    else:
+                        mean_val = np.mean(channel_data.astype(np.float32))
+                        std_val = np.std(channel_data.astype(np.float32))
+                        computed_on = "all (no clean segments)"
+                else:
+                    mean_val = np.mean(channel_data.astype(np.float32))
+                    std_val = np.std(channel_data.astype(np.float32))
+                    computed_on = "all"
+                
                 print(f"  {channel_name:12s}: "
                       f"shape={channel_data.shape}, "
                       f"dtype={channel_data.dtype}, "
-                      f"mean={np.mean(channel_data):6.3f}, "
-                      f"std={np.std(channel_data):6.3f}, "
-                      f"duration={duration_hours:.2f}h")
+                      f"mean={mean_val:6.3f}, "
+                      f"std={std_val:6.3f}, "
+                      f"duration={duration_hours:.2f}h "
+                      f"({computed_on})")
         
         print()
         print("✓ Validation successful")
