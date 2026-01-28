@@ -1,0 +1,197 @@
+# STAGES Data Conversion Configuration
+# ======================================
+
+# Input directories (CogPSGFormerPP processed data)
+input:
+  base_dir: /home/boshra95/scratch/stages/stages/processed
+  eeg_dir: eeg_segmented
+  ecg_dir: ecg_segmented
+  respiratory_dir: respiratory_segmented
+  eog_dir: eog_segmented
+  emg_dir: emg_segmented
+  cognitive_targets: cognitive_targets.csv
+  demographics: demographics_final.csv
+  simple_channels: simple_channels.csv
+
+# Output directories (SleepFM format)
+output:
+  base_dir: /home/boshra95/scratch/stages/sleepfm_format
+  hdf5_dir: hdf5_data
+  labels_dir: labels
+  splits_dir: splits
+  logs_dir: logs
+  validation_dir: validation
+
+# Channel mapping (Your names → SleepFM names)
+channel_mapping:
+  # EEG channels (BAS modality)
+  C3-M2: C3-M2
+  C4-M1: C4-M1
+  O1-M2: O1-M2
+  O2-M1: O2-M1
+  
+  # EOG channels (BAS modality in SleepFM)
+  LOC: EOG(L)
+  ROC: EOG(R)
+  
+  # ECG channels (EKG modality)
+  EKG: EKG
+  
+  # Respiratory channels (RESP modality)
+  FLOW: Flow
+  THOR: Thor
+  ABDM: ABD
+  
+  # EMG channels (EMG modality)
+  CHIN: CHIN
+  RLEG: RLEG
+  LLEG: LLEG
+
+# Modality definitions (for validation)
+modalities:
+  BAS:
+    required: true
+    min_channels: 1
+    expected_channels: [C3-M2, C4-M1, O1-M2, O2-M1, EOG(L), EOG(R)]
+  
+  RESP:
+    required: true
+    min_channels: 1
+    expected_channels: [Flow, Thor, ABD]
+  
+  EKG:
+    required: true
+    min_channels: 1
+    expected_channels: [EKG]
+  
+  EMG:
+    required: true
+    min_channels: 1
+    expected_channels: [CHIN, RLEG, LLEG]
+
+# Processing parameters
+processing:
+  # Current sampling rate of your data
+  current_sample_rate: 100
+  
+  # Target sampling rate for SleepFM
+  target_sample_rate: 128
+  
+  # Resampling method: 'linear', 'cubic', or 'fft'
+  resampling_method: linear
+  
+  # Data type for HDF5 storage
+  dtype: float16
+  
+  # HDF5 compression
+  compression: gzip
+  compression_opts: 4
+  
+  # Chunk size for HDF5 (in samples, 5 minutes at 128 Hz)
+  chunk_size: 38400  # 5 * 60 * 128
+  
+  # Segment size from your preprocessed data (30 sec at 100 Hz)
+  segment_samples: 3000
+  segment_duration: 30
+  
+  # Validation thresholds
+  normalization_mean_threshold: 0.1  # Mean should be close to 0
+  normalization_std_threshold: [0.8, 1.2]  # Std should be close to 1
+
+# Subject selection
+subjects:
+  # List of specific subjects (empty = all subjects)
+  include: []
+  
+  # List of subjects to exclude
+  exclude: []
+  
+  # Pilot mode: process only first N subjects for testing
+  pilot_mode: false
+  pilot_count: 10
+  
+  # Quality filters
+  min_channels_per_modality:
+    BAS: 2  # At least 2 EEG channels
+    RESP: 1
+    EKG: 1
+    EMG: 1
+  
+  # Minimum recording duration (in hours)
+  min_duration_hours: 4.0
+
+# Label processing
+labels:
+  # Cognitive targets to include
+  cognitive_scores:
+    - sustained_attention
+    - working_memory
+    - episodic_memory
+    - executive_functioning
+    - overall_cognitive
+    - nback_working_memory_capacity
+    - nback_speed
+    - nback_accuracy
+    - nback_impulsivity
+  
+  # Demographics features
+  demographics_features:
+    - nsrr_age
+    - nsrr_sex
+  
+  # Normalize demographics
+  normalize_demographics: true
+  
+  # Gender encoding
+  gender_encoding:
+    male: 1
+    female: 0
+
+# Train/Val/Test split
+split:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  random_seed: 42
+  
+  # Stratify by cognitive score (ensure balanced distribution)
+  stratify_by: overall_cognitive
+  stratify_bins: 5
+
+# Processing options
+options:
+  # Number of parallel workers
+  num_workers: 8
+  
+  # Batch size for parallel processing
+  batch_size: 1
+  
+  # Resume from previous run
+  resume: true
+  
+  # Skip existing files
+  skip_existing: true
+  
+  # Verbose logging
+  verbose: true
+  
+  # Save intermediate validation plots
+  save_validation_plots: true
+  
+  # Number of subjects to validate in detail
+  detailed_validation_count: 5
+
+# Advanced options
+advanced:
+  # Apply additional quality checks
+  check_for_nans: true
+  check_for_infs: true
+  
+  # Verify normalization
+  verify_normalization: true
+  
+  # Create backup of logs
+  backup_logs: true
+  
+  # Memory optimization
+  clear_cache_per_subject: true

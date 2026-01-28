@@ -15,6 +15,18 @@
             ],
             "console": "integratedTerminal",
             "justMyCode": true
+            },
+        {
+            "name": "Debug Demo",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/notebooks/demo.py",
+            // "args": [
+            // "--config_path",
+            // "${workspaceFolder}/sleepfm/configs/config_finetune_disease_prediction.yaml",
+            // ],
+            "console": "integratedTerminal",
+            "justMyCode": true
             }
     ]
 }

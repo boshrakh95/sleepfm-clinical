@@ -28,9 +28,57 @@
 Sleep is a fundamental biological process with broad implications for physical and mental health, yet its complex relationship with disease remains poorly understood. Polysomnography (PSG), the gold standard for sleep analysis, captures rich physiological signals but remains underutilized due to challenges in standardization, generalizability, and multimodal integration. To address these limitations, we developed SleepFM, a multimodal sleep foundation model trained with a novel contrastive learning approach that accommodates multiple PSG montages—the specific arrangements of electrodes and sensors used to record physiological signals during sleep. Trained on a curated dataset of over 585,000 hours of PSG recordings from approximately 65,000 participants across multiple cohorts, SleepFM produces latent sleep representations that capture the physiological and temporal structure of sleep and enable accurate prediction of future disease risk. SleepFM achieved a C-Index of at least 0.75 (Bonferroni-corrected p < 0.01) for 130 conditions, including all-cause mortality (C-Index: 0.84), dementia (0.85), myocardial infarction (0.81), heart failure (0.80), chronic kidney disease (0.79), stroke (0.78), and atrial fibrillation (0.78). Moreover, the model demonstrates strong transfer learning performance on a dataset from the Sleep Heart Health Study (SHHS), a dataset that was excluded from pretraining, and performs competitively with specialized sleep-staging models such as U-Sleep and YASA on common sleep analysis tasks, achieving mean F1 scores of 0.70–0.78 for sleep staging and accuracies of 0.69 and 0.87 for classifying sleep apnea severity and presence. This work shows that foundation models can extract clinically meaningful features from multi-modal sleep recordings, enabling scalable, label-efficient analysis and disease prediction.
 
 # 📖 Table of Contents
-1. [Installation](#installation)
-2. [Usage](#usage)
-3. [Licence](#license)
+1. [STAGES Data Preparation](#stages-data-preparation) **← NEW!**
+2. [Installation](#installation)
+3. [Usage](#usage)
+4. [Licence](#license)
+
+---
+
+<a name="stages-data-preparation"/>
+
+# 🆕 STAGES Data Preparation for SleepFM
+
+**New in this fork:** Complete pipeline to convert STAGES preprocessed data for SleepFM fine-tuning on cognitive prediction.
+
+## 📂 Location
+[`sleepfm/stages_preprocessing/`](sleepfm/stages_preprocessing/)
+
+## 🚀 Quick Start
+```bash
+cd sleepfm/stages_preprocessing
+bash getting_started.sh
+```
+
+## 📚 Documentation
+- [📖 Complete README](sleepfm/stages_preprocessing/README.md) - Full documentation
+- [✅ Checklist](sleepfm/stages_preprocessing/CHECKLIST.md) - Step-by-step guide  
+- [📋 Implementation Summary](sleepfm/stages_preprocessing/IMPLEMENTATION_SUMMARY.md) - Overview
+- [🔧 Config Reference](sleepfm/stages_preprocessing/config_stages_conversion.yaml) - All parameters
+
+## 🎯 What It Does
+1. **Converts** 30-sec segmented NumPy arrays (100 Hz) → continuous HDF5 (128 Hz)
+2. **Prepares** cognitive targets and demographics in SleepFM format
+3. **Creates** stratified train/val/test splits
+4. **Validates** all conversions with comprehensive quality checks
+
+## ✨ Features
+- ✅ Fully configurable via YAML config file
+- ✅ Pilot mode for testing (10 subjects first)
+- ✅ Resume capability (skip existing files)
+- ✅ Detailed logging and validation reports
+- ✅ Channel name mapping (LOC→EOG(L), FLOW→Flow, etc.)
+- ✅ Handles all 4 modalities (BAS, RESP, EKG, EMG)
+- ✅ 75% storage savings (float16 + gzip compression)
+
+## 📊 Processing Stats
+- **Input:** ~1500 subjects, 30-sec segments @ 100 Hz, NumPy format (~168 GB)
+- **Output:** ~1500 HDF5 files, continuous @ 128 Hz, compressed (~30-40 GB)
+- **Time:** ~3-7 hours for full cohort (depends on I/O)
+
+See [`sleepfm/stages_preprocessing/`](sleepfm/stages_preprocessing/) for complete details.
+
+---
 
 <a name="installation"/>
 
