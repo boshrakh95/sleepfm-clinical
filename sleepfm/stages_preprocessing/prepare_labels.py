@@ -78,16 +78,56 @@ class STAGESLabelPreparator:
         return subjects
     
     def load_cognitive_targets(self) -> pd.DataFrame:
-        """Load cognitive targets CSV."""
+        """Load cognitive targets CSV (regression scores)."""
         cognitive_file = self.input_base / self.config['input']['cognitive_targets']
         
         logger.info(f"Loading cognitive targets from: {cognitive_file}")
         
         df = pd.read_csv(cognitive_file)
-        logger.info(f"Loaded {len(df)} subjects with cognitive scores")
+        logger.info(f"Loaded {len(df)} subjects with cognitive scores (regression)")
         logger.info(f"Columns: {list(df.columns)}")
         
         return df
+    
+    def load_classification_labels(self, available_subjects: List[str]) -> pd.DataFrame:
+        """Load classification labels from individual_scores directory."""
+        logger.info("Loading classification labels from individual_scores/...")
+        
+        individual_scores_dir = self.input_base / 'individual_scores'
+        
+        # Start with subject IDs
+        classification_df = pd.DataFrame({'Study ID': available_subjects})
+        
+        # Load each classification file
+        score_columns = self.config['labels']['cognitive_scores']
+        
+        for score_name in score_columns:
+            class_file = individual_scores_dir / f"processed_{score_name}_classification.csv"
+            
+            if class_file.exists():
+                score_df = pd.read_csv(class_file)
+                
+                # Rename subject_id to Study ID and convert to string
+                score_df = score_df.rename(columns={'subject_id': 'Study ID'})
+                score_df['Study ID'] = score_df['Study ID'].astype(str)
+                
+                # Merge
+                classification_df = classification_df.merge(
+                    score_df,
+                    on='Study ID',
+                    how='left'
+                )
+                
+                # Convert to int (0/1)
+                classification_df[score_name] = classification_df[score_name].fillna(-1).astype(int)
+                classification_df.loc[classification_df[score_name] == -1, score_name] = pd.NA
+                
+                logger.info(f"  {score_name}: {score_df[score_name].notna().sum()} subjects")
+            else:
+                logger.warning(f"  {score_name}: classification file not found")
+                classification_df[score_name] = pd.NA
+        
+        return classification_df
     
     def load_demographics(self) -> pd.DataFrame:
         """Load demographics CSV."""
@@ -103,6 +143,21 @@ class STAGESLabelPreparator:
     
     def prepare_cognitive_labels(self, available_subjects: List[str]) -> pd.DataFrame:
         """Prepare cognitive targets in SleepFM format."""
+        task_type = self.config['labels'].get('task_type', 'regression')
+        
+        logger.info(f"Preparing labels for task type: {task_type}")
+        
+        if task_type == 'regression':
+            return self._prepare_regression_labels(available_subjects)
+        elif task_type == 'classification':
+            return self._prepare_classification_labels(available_subjects)
+        elif task_type == 'both':
+            return self._prepare_both_labels(available_subjects)
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+    
+    def _prepare_regression_labels(self, available_subjects: List[str]) -> pd.DataFrame:
+        """Prepare regression labels (continuous scores)."""
         # Load raw data
         cognitive_df = self.load_cognitive_targets()
         
@@ -137,7 +192,7 @@ class STAGESLabelPreparator:
         if missing_scores:
             logger.warning(f"Missing cognitive scores: {missing_scores}")
         
-        logger.info(f"Available cognitive scores: {available_scores}")
+        logger.info(f"Available cognitive scores (regression): {available_scores}")
         
         # Select columns
         output_columns = ['Study ID'] + available_scores
@@ -153,6 +208,44 @@ class STAGESLabelPreparator:
                        f"missing={missing_pct:.1f}%")
         
         return cognitive_df
+    
+    def _prepare_classification_labels(self, available_subjects: List[str]) -> pd.DataFrame:
+        """Prepare classification labels (binary 0/1)."""
+        classification_df = self.load_classification_labels(available_subjects)
+        
+        score_columns = self.config['labels']['cognitive_scores']
+        
+        # Log statistics
+        for col in score_columns:
+            if col in classification_df.columns:
+                value_counts = classification_df[col].value_counts()
+                missing_pct = classification_df[col].isna().sum() / len(classification_df) * 100
+                
+                logger.info(f"  {col}: class 0={value_counts.get(0, 0)}, "
+                           f"class 1={value_counts.get(1, 0)}, "
+                           f"missing={missing_pct:.1f}%")
+        
+        return classification_df
+    
+    def _prepare_both_labels(self, available_subjects: List[str]) -> pd.DataFrame:
+        """Prepare both regression and classification labels."""
+        # Get regression labels
+        regression_df = self._prepare_regression_labels(available_subjects)
+        
+        # Get classification labels
+        classification_df = self._prepare_classification_labels(available_subjects)
+        
+        # Rename classification columns to have _class suffix
+        score_columns = self.config['labels']['cognitive_scores']
+        rename_dict = {col: f"{col}_class" for col in score_columns if col in classification_df.columns}
+        classification_df = classification_df.rename(columns=rename_dict)
+        
+        # Merge
+        combined_df = regression_df.merge(classification_df, on='Study ID', how='left')
+        
+        logger.info(f"Combined labels: {len(combined_df)} subjects, {len(combined_df.columns)-1} features")
+        
+        return combined_df
     
     def prepare_demographics(self, available_subjects: List[str]) -> pd.DataFrame:
         """Prepare demographics in SleepFM format."""
