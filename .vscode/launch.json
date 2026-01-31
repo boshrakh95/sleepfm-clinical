@@ -34,10 +34,38 @@
             "request": "launch",
             "program": "${workspaceFolder}/sleepfm/stages_preprocessing/test_single_subject.py",
             "args": [
-            "--auto"
+            // "--auto"
+            "--subject",
+            "MSQW00046",
             ],
             "console": "integratedTerminal",
             "justMyCode": true
-            }
+            },
+        {
+            "name": "🔧 Convert to hdf5",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_preprocessing/convert_to_hdf5.py",
+            "args": [
+            "--config",
+            "${workspaceFolder}/sleepfm/stages_preprocessing/config_stages_conversion.yaml",
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+            },
+        {
+            "name": "🌐 Prepare labels",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_preprocessing/prepare_labels.py",
+            "args": [
+            "--config",
+            "${workspaceFolder}/sleepfm/stages_preprocessing/config_stages_conversion.yaml",
+            // "--pilot_count",
+            // "2"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+            },
     ]
 }

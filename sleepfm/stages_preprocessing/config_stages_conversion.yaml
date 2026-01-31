@@ -104,11 +104,12 @@ subjects:
   include: []
   
   # List of subjects to exclude
-  exclude: []
+  exclude: ["MSQW00118", "MSQW00140"]
+  # exclude: ["MSQW00046", "MSQW00051", "MSQW00055", "MSQW00057", "MSQW00058", "MSQW00062", "MSQW00063", "MSQW00065", "MSQW00077", "MSQW00082", "MSQW00085", "MSQW00090", "MSQW00097", "MSQW00100", "MSQW00102", "MSQW00115", "MSQW00116", "MSQW00118", "MSQW00127", "MSQW00132", "MSQW00139", "MSQW00140", "MSQW00141", "MSQW00142", "MSQW00143", "MSQW00154", "MSQW00164", "MSQW00165"]
   
   # Pilot mode: process only first N subjects for testing
   pilot_mode: false
-  pilot_count: 10
+  pilot_count: 500
   
   # Quality filters
   min_channels_per_modality:
@@ -134,10 +135,9 @@ labels:
     - working_memory
     - episodic_memory
     - executive_functioning
-    - nback_working_memory_capacity
-    - nback_speed
-    - nback_accuracy
-    - nback_impulsivity
+    - "CPF_A.CPF_CR" 
+    - "CPF_A.CPF_FP"
+    - "CPF_A.CPF_TPRT"
   
   # Demographics features
   demographics_features:

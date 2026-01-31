@@ -72,6 +72,9 @@ class STAGEStoSleepFMConverter:
             'skipped': 0,
             'errors': []
         }
+        
+        # Track subjects with missing normstats (all-artifact signals)
+        self.subjects_without_normstats = set()
     
     def load_config(self, config_path: str) -> Dict:
         """Load YAML configuration file."""
@@ -388,10 +391,16 @@ class STAGEStoSleepFMConverter:
                 
                 if normstats is None:
                     logger.warning(f"  {sleepfm_name}: normstats not found, skipping normalization")
+                    self.subjects_without_normstats.add(subject_id)
                 else:
-                    # Apply artifact-aware normalization
-                    continuous = self.apply_normalization(continuous, normstats)
-                    logger.debug(f"  {sleepfm_name}: normalized with mean={normstats['mean']:.3f}, std={normstats['std']:.3f}")
+                    # Check for NaN stats (all-artifact signal)
+                    if np.isnan(normstats.get('mean', 0)) or np.isnan(normstats.get('std', 1)):
+                        logger.warning(f"  {sleepfm_name}: normstats contain NaN (all-artifact signal), skipping normalization")
+                        self.subjects_without_normstats.add(subject_id)
+                    else:
+                        # Apply artifact-aware normalization
+                        continuous = self.apply_normalization(continuous, normstats)
+                        logger.debug(f"  {sleepfm_name}: normalized with mean={normstats['mean']:.3f}, std={normstats['std']:.3f}")
                 
                 # Resample to 128 Hz
                 resampled = self.resample_signal(continuous)
@@ -537,6 +546,9 @@ class STAGEStoSleepFMConverter:
         
         # Print summary
         self.print_summary()
+        
+        # Save list of subjects without normstats
+        self.save_subjects_without_normstats()
     
     def print_summary(self):
         """Print conversion summary."""
@@ -564,6 +576,29 @@ class STAGEStoSleepFMConverter:
             json.dump(self.stats, f, indent=2)
         
         logger.info(f"\nSummary saved to: {summary_file}")
+    
+    def save_subjects_without_normstats(self):
+        """Save list of subjects with missing/NaN normalization stats."""
+        if not self.subjects_without_normstats:
+            logger.info("\nAll subjects had valid normalization statistics.")
+            return
+        
+        log_dir = Path(self.config['output']['base_dir']) / self.config['output']['logs_dir']
+        
+        # Save as text file
+        output_file = log_dir / f"subjects_without_normstats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        
+        with open(output_file, 'w') as f:
+            f.write("# Subjects with Missing/NaN Normalization Stats\n")
+            f.write("# These subjects likely have all-artifact signals (all-true exclusion masks)\n")
+            f.write(f"# Total: {len(self.subjects_without_normstats)} subjects\n")
+            f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("\n")
+            for subject_id in sorted(self.subjects_without_normstats):
+                f.write(f"{subject_id}\n")
+        
+        logger.info(f"\n⚠ {len(self.subjects_without_normstats)} subjects had missing/NaN normstats (all-artifact signals)")
+        logger.info(f"List saved to: {output_file}")
 
 
 def main():

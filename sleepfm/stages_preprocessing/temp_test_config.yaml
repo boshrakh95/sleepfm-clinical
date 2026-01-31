@@ -34,10 +34,9 @@ labels:
   - working_memory
   - episodic_memory
   - executive_functioning
-  - nback_working_memory_capacity
-  - nback_speed
-  - nback_accuracy
-  - nback_impulsivity
+  - CPF_A.CPF_CR
+  - CPF_A.CPF_FP
+  - CPF_A.CPF_TPRT
   demographics_features:
   - nsrr_age
   - nsrr_sex
@@ -115,12 +114,12 @@ split:
 subjects:
   exclude: []
   include:
-  - BOGN00004
+  - MSQW00046
   min_channels_per_modality:
     BAS: 2
     EKG: 1
     EMG: 1
     RESP: 1
   min_duration_hours: 4.0
-  pilot_count: 10
-  pilot_mode: false
+  pilot_count: 500
+  pilot_mode: true

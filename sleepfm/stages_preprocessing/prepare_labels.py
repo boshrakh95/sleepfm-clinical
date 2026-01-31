@@ -74,11 +74,19 @@ class STAGESLabelPreparator:
         logger.info("="*80)
     
     def get_available_subjects(self) -> List[str]:
-        """Get list of subjects with HDF5 files."""
+        """Get list of subjects with HDF5 files, excluding those in config."""
         hdf5_files = list(self.hdf5_dir.glob("*.hdf5"))
         subjects = [f.stem for f in hdf5_files]
         
         logger.info(f"Found {len(subjects)} subjects with HDF5 files")
+        
+        # Exclude subjects from config
+        excluded_subjects = self.config['subjects'].get('exclude', [])
+        if excluded_subjects:
+            n_before = len(subjects)
+            subjects = [s for s in subjects if s not in excluded_subjects]
+            n_after = len(subjects)
+            logger.info(f"Excluded {n_before - n_after} subjects from config: {n_before} → {n_after}")
         
         return subjects
     
@@ -444,13 +452,26 @@ def main():
         "--config",
         type=str,
         default="config_stages_conversion.yaml",
-        help="Path to configuration YAML file"
+        help="Path to configuration YAML file",
+    )
+    parser.add_argument(
+        "--pilot_count",
+        type=int,
+        default=None,
+        help="Override pilot_count from config (number of subjects to process)",
     )
     
     args = parser.parse_args()
     
     # Run preparation
     preparator = STAGESLabelPreparator(args.config)
+    
+    # Override pilot_count if provided. (NOT USED NOW, ALL SUBJECTS WITH AVAILABLE HDF5 ARE PROCESSED)
+    if args.pilot_count is not None:
+        logger.info(f"Overriding pilot_count: {preparator.config['subjects']['pilot_count']} → {args.pilot_count}")
+        preparator.config['subjects']['pilot_count'] = args.pilot_count
+        preparator.config['subjects']['pilot_mode'] = True  # Enable pilot mode when count is specified
+    
     preparator.run()
 
 
