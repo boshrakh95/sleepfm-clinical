@@ -9,7 +9,7 @@
 # ============================================================================
 task:
   # Task type: 'regression' or 'classification'
-  task_type: 'regression'  # or 'classification'
+  task_type: 'classification' 
   
   # Cognitive target to predict
   # Options: sustained_attention, working_memory, episodic_memory, 
@@ -63,7 +63,7 @@ model:
     lstm_bidirectional: true
     
     # Output layer
-    num_classes: 1  # 1 for regression, 2 for binary classification
+    num_classes: 2  # 1 for regression, 2 for binary classification
     
     # Demographics embedding (if use_demographics: true)
     demo_embed_dim: 16
@@ -90,6 +90,13 @@ data:
   # Modalities to use
   modality_types: ["BAS", "RESP", "EKG", "EMG"]
   
+  # Channels to exclude from all modalities
+  # Example to exclude FLOW channel: exclude_channels: ["Flow", "FLOW", "flow"]
+  # Matching is case-insensitive, so you only need one variant
+  # Common exclusions: ["Flow"] to exclude respiratory flow
+  # Leave empty list [] to include all channels
+  exclude_channels: []  # Add channel names to exclude
+  
   # Maximum channels per modality (for padding)
   max_channels:
     BAS: 6   # C3-M2, C4-M1, O1-M2, O2-M1, EOG(L), EOG(R)
@@ -114,7 +121,7 @@ data:
 # ============================================================================
 training:
   # Training parameters
-  batch_size: 16
+  batch_size: 4
   epochs: 50
   
   # Optimizer
@@ -148,7 +155,7 @@ training:
   # Loss function
   # For regression: 'MSE', 'MAE', 'Huber', 'SmoothL1'
   # For classification: 'BCE', 'CrossEntropy', 'FocalLoss'
-  loss_function: 'MSE'
+  loss_function: 'BCE'
   
   # For Huber loss
   huber_delta: 1.0
@@ -175,14 +182,14 @@ evaluation:
   # For regression: 'MSE', 'MAE', 'R2', 'PearsonR', 'SpearmanR'
   # For classification: 'Accuracy', 'F1', 'AUC', 'Precision', 'Recall'
   metrics:
-    - 'MSE'
-    - 'MAE'
-    - 'R2'
-    - 'PearsonR'
-    - 'SpearmanR'
+    - 'Accuracy'
+    - 'F1'
+    - 'AUC'
+    - 'Precision'
+    - 'Recall'
   
   # Primary metric for model selection
-  primary_metric: 'R2'
+  primary_metric: 'Accuracy'
   higher_is_better: true  # true for R2, F1, AUC; false for MSE, MAE
   
   # Save predictions
@@ -208,7 +215,7 @@ logging:
   wandb_entity: null  # Your W&B username/team
   
   # TensorBoard
-  use_tensorboard: true
+  use_tensorboard: false
   
   # Save checkpoints
   save_checkpoint_interval: 5  # Save every N epochs

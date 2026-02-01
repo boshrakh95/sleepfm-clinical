@@ -80,6 +80,10 @@ class CognitivePredictionDataset(Dataset):
         self.chunk_duration = config['data']['chunk_duration']
         self.chunk_size = config['data']['chunk_size']
         self.aggregation_window = config['data']['aggregation_window']
+        self.exclude_channels = config['data'].get('exclude_channels', [])
+        
+        # Create set of excluded channel names (case-insensitive)
+        self.excluded_set = set([ch.lower() for ch in self.exclude_channels])
         
         # Load split
         split_path = config['data']['split_path']

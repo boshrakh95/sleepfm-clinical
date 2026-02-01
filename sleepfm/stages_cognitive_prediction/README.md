@@ -260,6 +260,30 @@ task:
   quality_weighting: false  # Weight by quality (experimental)
 ```
 
+### Exclude Specific Channels
+
+Exclude specific channels (e.g., FLOW) from embedding generation and fine-tuning:
+
+```yaml
+data:
+  exclude_channels: ["Flow", "FLOW"]  # Case-insensitive matching
+```
+
+This is useful if you want to:
+- Exclude channels with poor quality across the dataset
+- Test the impact of specific channels on model performance
+- Match channels used in other studies
+
+**Important:** If you exclude channels, you must regenerate embeddings:
+
+```bash
+# Update config to exclude channels
+# Then regenerate embeddings
+python generate_embeddings.py --config config_finetune_cognitive.yaml
+```
+
+The excluded channels will be filtered out during embedding generation. The same embeddings will then be used for fine-tuning.
+
 ### Freeze Encoder
 
 Freeze the SetTransformer encoder and only train LSTM:

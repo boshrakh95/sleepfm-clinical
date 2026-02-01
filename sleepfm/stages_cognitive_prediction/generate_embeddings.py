@@ -100,6 +100,14 @@ def generate_embeddings_for_file(
     chunk_size = config['data']['chunk_size']
     modality_types = config['data']['modality_types']
     max_channels_config = config['data']['max_channels']
+    exclude_channels = config['data'].get('exclude_channels', [])
+    
+    # Create set of excluded channel names (case-insensitive)
+    excluded_set = set([ch.lower() for ch in exclude_channels])
+    
+    # Log excluded channels if any
+    if excluded_set:
+        logger.debug(f"Excluding channels: {exclude_channels}")
     
     embeddings_list = []
     
@@ -107,10 +115,19 @@ def generate_embeddings_for_file(
         # Get available channels
         available_channels = list(hf.keys())
         
+        # Track excluded channels found in this file
+        excluded_found = [ch for ch in available_channels if ch.lower() in excluded_set]
+        if excluded_found:
+            logger.debug(f"Excluding {len(excluded_found)} channel(s) from {Path(file_path).stem}: {excluded_found}")
+        
         # Group by modality
         modality_to_channels = {mod: [] for mod in modality_types}
         
         for channel in available_channels:
+            # Skip excluded channels
+            if channel.lower() in excluded_set:
+                continue
+                
             for modality in modality_types:
                 if channel in channel_groups[modality]:
                     modality_to_channels[modality].append(channel)
@@ -194,6 +211,13 @@ def main(config_path: str):
     logger.info("STAGES Embedding Generation")
     logger.info("="*80)
     logger.info(f"Output directory: {output_dir}")
+    
+    # Log channel exclusions if any
+    exclude_channels = config['data'].get('exclude_channels', [])
+    if exclude_channels:
+        logger.info(f"Excluding channels: {exclude_channels}")
+    else:
+        logger.info("No channels excluded (using all available channels)")
     
     # Set device
     device = torch.device(config['system']['device'] if torch.cuda.is_available() else 'cpu')
