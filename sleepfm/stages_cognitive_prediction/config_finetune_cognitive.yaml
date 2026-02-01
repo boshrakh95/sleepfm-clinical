@@ -9,6 +9,9 @@
 # ============================================================================
 task:
   # Task type: 'regression' or 'classification'
+  # - 'regression': Predict continuous z-scores
+  # - 'classification': Predict binary labels (0/1)
+  # The model (CognitiveEmbeddingLSTM) automatically adapts to your choice
   task_type: 'classification' 
   
   # Cognitive target to predict
@@ -16,9 +19,10 @@ task:
   #          executive_functioning, CPF_A.CPF_CR, CPF_A.CPF_FP, CPF_A.CPF_TPRT
   target: 'sustained_attention'
   
-  # For classification: use binary labels (0/1)
-  # For regression: use continuous z-scores
-  use_demographics: true  # Include age and gender as additional features
+  # Include age and gender as additional features
+  # The model automatically adapts: includes demographics embedding if true, skips if false
+  # NO need to change model name when toggling this
+  use_demographics: true
   
   # Quality filtering
   use_quality_filtering: true  # Use quality metadata to filter/weight embeddings
@@ -29,12 +33,12 @@ task:
 # MODEL CONFIGURATION
 # ============================================================================
 model:
-  # Model architecture
-  # Options: 
-  #   - 'CognitiveRegressionLSTM' (for regression)
-  #   - 'CognitiveClassificationLSTM' (for classification)
-  #   - 'CognitiveLSTMWithDemo' (includes demographics)
-  name: 'CognitiveLSTMWithDemo'
+  # Model architecture: Always use 'CognitiveEmbeddingLSTM'
+  # This model automatically adapts based on:
+  #   - task.task_type ('regression' or 'classification')
+  #   - task.use_demographics (true or false)
+  # NO need to change model name when switching between regression/classification or demographics on/off
+  name: 'CognitiveEmbeddingLSTM'
   
   # Pre-trained model to load
   # Options: 'base' or 'diagnosis'
@@ -63,9 +67,13 @@ model:
     lstm_bidirectional: true
     
     # Output layer
-    num_classes: 2  # 1 for regression, 2 for binary classification
+    # NOTE: num_classes is set automatically by the code based on task_type:
+    #   - task_type: 'regression' → num_classes = 1 (single output)
+    #   - task_type: 'classification' → num_classes = 2 (binary logits)
+    # You can leave this value as-is; it will be overridden automatically
+    num_classes: 2
     
-    # Demographics embedding (if use_demographics: true)
+    # Demographics embedding dimension (only used if task.use_demographics: true)
     demo_embed_dim: 16
 
 # ============================================================================
@@ -248,11 +256,13 @@ system:
 # PREPROCESSING (for embeddings)
 # ============================================================================
 preprocessing:
-  # If using cached embeddings
+  # Directory containing pre-computed embeddings (from generate_embeddings.py)
   embeddings_dir: '/home/boshra95/scratch/stages/sleepfm_format/embeddings'
   
-  # Generate embeddings on-the-fly or use cached
-  generate_embeddings: true  # false = use cached embeddings
+  # IMPORTANT: Set to FALSE to use pre-computed cached embeddings (RECOMMENDED)
+  # Set to TRUE for on-the-fly embedding generation (NOT YET IMPLEMENTED)
+  # You should run generate_embeddings.py first, then set this to false
+  generate_embeddings: false  # false = use cached embeddings (RECOMMENDED)
   
   # Embedding aggregation method
   # Options: 'mean', 'max', 'attention', 'lstm'

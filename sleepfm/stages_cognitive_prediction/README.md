@@ -31,7 +31,10 @@ model:
 
 # Model architecture
 model:
-  name: 'CognitiveLSTMWithDemo'  # Includes demographics
+  name: 'CognitiveEmbeddingLSTM'  # Use pre-computed embeddings
+
+preprocessing:
+  generate_embeddings: false  # Must be false to use cached embeddings
 ```
 
 ### 2. Generate Embeddings (Recommended)
@@ -83,21 +86,78 @@ task:
 
 ### Model Options
 
-**Model Architectures:**
-- `CognitiveRegressionLSTM` - LSTM for regression (sleep embeddings only)
-- `CognitiveClassificationLSTM` - LSTM for classification (sleep embeddings only)
-- `CognitiveLSTMWithDemo` - LSTM with demographics (recommended)
-- `CognitiveEmbeddingLSTM` - Works with pre-computed embeddings (fastest)
+### Model Options
 
-**Pre-trained Models:**
+**Use `CognitiveEmbeddingLSTM` for everything** - it automatically adapts based on your config:
+
+✅ **Supports:**
+- **Regression** (`task_type: 'regression'`) - predicts continuous z-scores
+- **Classification** (`task_type: 'classification'`) - predicts binary labels (0/1)
+- **With demographics** (`use_demographics: true`) - includes age and gender
+- **Without demographics** (`use_demographics: false`) - sleep data only
+
+**You only need ONE model name: `CognitiveEmbeddingLSTM`**
+
+The model architecture automatically adjusts based on:
+1. `task.task_type` - switches between regression/classification output
+2. `task.use_demographics` - adds/removes demographics embedding layer
+
+**No need to change the model name** when you switch tasks or toggle demographics!
+
+## Configuration Examples
+
+### Example 1: Binary Classification with Demographics
+
+```yaml
+task:
+  task_type: 'classification'
+  target: 'sustained_attention'
+  use_demographics: true
+
+model:
+  name: 'CognitiveEmbeddingLSTM'  # Always the same model!
+  params:
+    num_classes: 2  # Binary classification
+```
+
+### Example 2: Regression without Demographics
+
+```yaml
+task:
+  task_type: 'regression'
+  target: 'working_memory'
+  use_demographics: false
+
+model:
+  name: 'CognitiveEmbeddingLSTM'  # Same model name!
+  params:
+    num_classes: 1  # Regression
+```
+
+### Example 3: Regression with Demographics
+
+```yaml
+task:
+  task_type: 'regression'
+  target: 'episodic_memory'
+  use_demographics: true
+
+model:
+  name: 'CognitiveEmbeddingLSTM'  # Always use this!
+  params:
+    num_classes: 1
+```
+
+**Pre-trained Models (for embedding generation only):**
 - `base` - Base SetTransformer pretrained on multi-dataset PSG
 - `diagnosis` - Diagnosis model fine-tuned for disease prediction
 
 ```yaml
+# Full configuration example
 model:
-  name: 'CognitiveLSTMWithDemo'
-  pretrained_model: 'base'
-  pretrained_checkpoint: '/path/to/checkpoint.pt'
+  name: 'CognitiveEmbeddingLSTM'  # The only model you need
+  pretrained_model: 'base'  # Only used by generate_embeddings.py
+  pretrained_checkpoint: '/path/to/checkpoint.pt'  # Only used by generate_embeddings.py
   
   params:
     embed_dim: 128  # Must match pretrained model
@@ -105,6 +165,11 @@ model:
     lstm_num_layers: 2
     lstm_bidirectional: true
     dropout: 0.3
+    
+preprocessing:
+  generate_embeddings: false  # MUST be false (use cached embeddings)
+  embeddings_dir: '/path/to/embeddings/'
+```
 ```
 
 ### Training Configuration
