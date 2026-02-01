@@ -91,6 +91,14 @@ class STAGESDataValidator:
         
         logger.info(f"Found {len(hdf5_files)} HDF5 files")
         
+        # Filter excluded subjects from config
+        excluded_subjects = self.config['subjects'].get('exclude', [])
+        if excluded_subjects:
+            n_before = len(hdf5_files)
+            hdf5_files = [f for f in hdf5_files if f.stem not in excluded_subjects]
+            n_after = len(hdf5_files)
+            logger.info(f"Excluded {n_before - n_after} subjects from validation: {n_before} → {n_after}")
+        
         return hdf5_files
     
     def validate_hdf5_structure(self, hdf5_path: Path) -> Dict:
@@ -138,7 +146,13 @@ class STAGESDataValidator:
         return result
     
     def validate_signal_properties(self, hdf5_path: Path) -> Dict:
-        """Validate signal properties (sampling rate, duration, normalization)."""
+        """Validate signal properties (sampling rate, duration, normalization).
+        
+        NOTE: Mean/std validation is done on CLEAN SEGMENTS ONLY (artifact-free),
+        matching the artifact-aware normalization approach used during conversion.
+        The normalization stats (mean, std) were computed on clean segments only,
+        so validation must also be done on clean segments for consistency.
+        """
         result = {
             'subject_id': hdf5_path.stem,
             'channels': {},
@@ -159,21 +173,27 @@ class STAGESDataValidator:
                     channel_data = hf[channel_name][:]
                     
                     # Calculate stats on clean segments only if quality metadata exists
+                    # This matches the artifact-aware normalization done during conversion
                     if quality_metadata is not None:
                         clean_data = self.get_clean_segments(channel_data, quality_metadata)
                         if len(clean_data) > 0:
-                            mean_val = float(np.mean(clean_data))
-                            std_val = float(np.std(clean_data))
-                            min_val = float(np.min(clean_data))
-                            max_val = float(np.max(clean_data))
+                            # Cast to float32 to avoid overflow issues
+                            clean_data_f32 = clean_data.astype(np.float32)
+                            mean_val = float(np.mean(clean_data_f32))
+                            std_val = float(np.std(clean_data_f32))
+                            min_val = float(np.min(clean_data_f32))
+                            max_val = float(np.max(clean_data_f32))
                         else:
                             mean_val = std_val = min_val = max_val = np.nan
                         computed_on_clean = True
                     else:
-                        mean_val = float(np.mean(channel_data))
-                        std_val = float(np.std(channel_data))
-                        min_val = float(np.min(channel_data))
-                        max_val = float(np.max(channel_data))
+                        # Fallback: compute on all data (but log warning)
+                        logger.warning(f"{subject_id}/{channel_name}: No quality metadata, computing stats on ALL data (not just clean)")
+                        channel_data_f32 = channel_data.astype(np.float32)
+                        mean_val = float(np.mean(channel_data_f32))
+                        std_val = float(np.std(channel_data_f32))
+                        min_val = float(np.min(channel_data_f32))
+                        max_val = float(np.max(channel_data_f32))
                         computed_on_clean = False
                     
                     channel_result = {
@@ -200,18 +220,20 @@ class STAGESDataValidator:
                         result['issues'].append(f"{channel_name}: contains Inf values")
                     
                     # Check normalization (only if computed on clean segments)
+                    # Since normalization was artifact-aware (computed on clean segments),
+                    # we validate using the same clean segments for consistency
                     if computed_on_clean and not np.isnan(mean_val):
                         mean_thresh = self.config['processing']['normalization_mean_threshold']
                         std_range = self.config['processing']['normalization_std_threshold']
                         
                         if abs(mean_val) > mean_thresh:
                             result['issues'].append(
-                                f"{channel_name}: mean {mean_val:.3f} > {mean_thresh}"
+                                f"{channel_name}: mean {mean_val:.3f} > {mean_thresh} (clean segments)"
                             )
                         
                         if not (std_range[0] <= std_val <= std_range[1]):
                             result['issues'].append(
-                                f"{channel_name}: std {std_val:.3f} outside {std_range}"
+                                f"{channel_name}: std {std_val:.3f} outside {std_range} (clean segments)"
                             )
                 
                 # Add quality info

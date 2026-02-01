@@ -162,7 +162,7 @@ split:
   # Stratify by cognitive score (ensure balanced distribution)
   # Options: sustained_attention, working_memory, episodic_memory, executive_functioning
   stratify_by: executive_functioning
-  stratify_bins: 5
+  stratify_bins: 2
 
 # Processing options
 options:

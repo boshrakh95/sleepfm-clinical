@@ -67,5 +67,35 @@
             "console": "integratedTerminal",
             "justMyCode": true
             },
+        {
+            "name": "🔱 Create Splits",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_preprocessing/create_splits.py",
+            "args": [
+            "--config",
+            "${workspaceFolder}/sleepfm/stages_preprocessing/config_stages_conversion.yaml",
+            // "--pilot_count",
+            // "2"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+            },
+        {
+            "name": "🌀 Validate Data",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_preprocessing/validate_data.py",
+            "args": [
+            "--config",
+            "${workspaceFolder}/sleepfm/stages_preprocessing/config_stages_conversion.yaml",
+            "--detailed",
+            "5"
+            // "--pilot_count",
+            // "2"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+            },
     ]
 }

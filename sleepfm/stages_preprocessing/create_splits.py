@@ -304,7 +304,15 @@ class STAGESSplitCreator:
             if target:
                 output_file = self.splits_dir / f"{split_name}_subjects_{target}.txt"
             else:
-                otarget_splits(self, labels_df: pd.DataFrame, splits: Dict[str, List[str]], target: str):
+                output_file = self.splits_dir / f"{split_name}_subjects.txt"
+            
+            with open(output_file, 'w') as f:
+                for subject_id in sorted(subject_ids):
+                    f.write(f"{subject_id}\n")
+            
+            logger.debug(f"  Saved {split_name} subject IDs to: {output_file}")
+    
+    def validate_target_splits(self, labels_df: pd.DataFrame, splits: Dict[str, List[str]], target: str):
         """Validate that splits have similar distributions for a target.
         
         Args:
@@ -329,19 +337,9 @@ class STAGESSplitCreator:
         
         # Create distribution plot
         if self.config['options']['save_validation_plots']:
-            self.plot_split_distributions(split_scores, target
-            logger.info(f"  Mean: {scores.mean():.3f}")
-            logger.info(f"  Std: {scores.std():.3f}")
-            logger.info(f"  Min: {scores.min():.3f}")
-            logger.info(f"  Max: {scores.max():.3f}")
-        
-        # Create distribution plot
-        if self.config['options']['save_validation_plots']:
-            self.plot_split_distributions(split_scores)
+            self.plot_split_distributions(split_scores, target)
     
-    def plot_split_distributions(self, split_scores: Dict[str, pd.Series]):
-        """Plot distributions for each split."""
-        validation_dir = self.output_base / self.config['output']['valida, target: str):
+    def plot_split_distributions(self, split_scores: Dict[str, pd.Series], target: str):
         """Plot distributions for each split.
         
         Args:
@@ -369,13 +367,17 @@ class STAGESSplitCreator:
         plt.savefig(plot_file, dpi=150, bbox_inches='tight')
         plt.close()
         
-        logger.debug(f"  Saved plot
+        logger.debug(f"  Saved plot to: {plot_file}")
+    
+    def run(self):
         """Run split creation pipeline."""
         # Load labels
         labels_df = self.load_labels()
         
         # Verify HDF5 files
-        laGet cognitive targets from config
+        labels_df = self.verify_hdf5_files(labels_df)
+        
+        # Get cognitive targets from config
         cognitive_targets = self.config['labels']['cognitive_scores']
         
         logger.info(f"\n{'='*80}")
@@ -438,13 +440,7 @@ class STAGESSplitCreator:
                        f"{row['val']:>8} "
                        f"{row['test']:>8}")
         
-        logger.info(""
-        # Validate distributions
-        self.validate_splits(labels_df, splits)
-        
-        logger.info("="*80)
-        logger.info("Split creation complete!")
-        logger.info("="*80)
+        logger.info("-" * 80)
 
 
 def main():
