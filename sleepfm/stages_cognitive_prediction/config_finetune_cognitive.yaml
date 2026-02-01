@@ -1,0 +1,288 @@
+# ============================================================================
+# STAGES Cognitive Prediction Fine-tuning Configuration
+# ============================================================================
+# This config file controls all aspects of fine-tuning SleepFM for cognitive
+# prediction tasks on the STAGES dataset.
+
+# ============================================================================
+# TASK CONFIGURATION
+# ============================================================================
+task:
+  # Task type: 'regression' or 'classification'
+  task_type: 'regression'  # or 'classification'
+  
+  # Cognitive target to predict
+  # Options: sustained_attention, working_memory, episodic_memory, 
+  #          executive_functioning, CPF_A.CPF_CR, CPF_A.CPF_FP, CPF_A.CPF_TPRT
+  target: 'sustained_attention'
+  
+  # For classification: use binary labels (0/1)
+  # For regression: use continuous z-scores
+  use_demographics: true  # Include age and gender as additional features
+  
+  # Quality filtering
+  use_quality_filtering: true  # Use quality metadata to filter/weight embeddings
+  min_clean_ratio: 0.5  # Minimum ratio of clean segments (0.0-1.0)
+  quality_weighting: false  # Weight embeddings by quality (experimental)
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+model:
+  # Model architecture
+  # Options: 
+  #   - 'CognitiveRegressionLSTM' (for regression)
+  #   - 'CognitiveClassificationLSTM' (for classification)
+  #   - 'CognitiveLSTMWithDemo' (includes demographics)
+  name: 'CognitiveLSTMWithDemo'
+  
+  # Pre-trained model to load
+  # Options: 'base' or 'diagnosis'
+  pretrained_model: 'base'  # Use base SetTransformer or diagnosis model
+  
+  # Path to pre-trained checkpoint
+  # For base model (SetTransformer):
+  pretrained_checkpoint: '/home/boshra95/sleepfm-clinical/sleepfm/checkpoints/model_base/best.pt'
+  
+  # For diagnosis model (if using diagnosis as pretrained):
+  # pretrained_checkpoint: '/home/boshra95/sleepfm-clinical/sleepfm/checkpoints/model_diagnosis/best.pth'
+  
+  # Model parameters
+  params:
+    embed_dim: 128  # Must match pretrained model
+    num_heads: 8
+    num_layers: 2
+    pooling_head: 8
+    dropout: 0.3
+    max_seq_length: 6480  # Maximum number of 5-min chunks (~540 hours)
+    
+    # LSTM parameters
+    lstm_hidden_dim: 128
+    lstm_num_layers: 2
+    lstm_dropout: 0.3
+    lstm_bidirectional: true
+    
+    # Output layer
+    num_classes: 1  # 1 for regression, 2 for binary classification
+    
+    # Demographics embedding (if use_demographics: true)
+    demo_embed_dim: 16
+
+# ============================================================================
+# DATA CONFIGURATION
+# ============================================================================
+data:
+  # Base directory containing HDF5 files
+  data_path: '/home/boshra95/scratch/stages/sleepfm_format/hdf5_data'
+  
+  # Labels directory
+  labels_path: '/home/boshra95/scratch/stages/sleepfm_format/labels'
+  
+  # Quality metadata directory
+  quality_path: '/home/boshra95/scratch/stages/sleepfm_format/quality_metadata'
+  
+  # Split file (will be constructed as dataset_split_{target}.json)
+  split_path: '/home/boshra95/scratch/stages/sleepfm_format/splits/dataset_split_sustained_attention.json'
+  
+  # Channel groups configuration
+  channel_groups_path: '/home/boshra95/sleepfm-clinical/sleepfm/configs/channel_groups.json'
+  
+  # Modalities to use
+  modality_types: ["BAS", "RESP", "EKG", "EMG"]
+  
+  # Maximum channels per modality (for padding)
+  max_channels:
+    BAS: 6   # C3-M2, C4-M1, O1-M2, O2-M1, EOG(L), EOG(R)
+    RESP: 3  # Flow, Thor, ABD
+    EKG: 1   # EKG
+    EMG: 3   # CHIN, RLEG, LLEG
+  
+  # Sampling parameters
+  sampling_freq: 128  # Hz
+  chunk_duration: 300  # seconds (5 minutes)
+  chunk_size: 38400  # 5 * 60 * 128
+  
+  # Aggregation window for embeddings
+  aggregation_window: 5  # Number of 5-min chunks to aggregate (25 minutes)
+  
+  # Data loading
+  max_files: null  # null = use all files, or specify number for debugging
+  cache_embeddings: true  # Cache embeddings to disk for faster training
+
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+training:
+  # Training parameters
+  batch_size: 16
+  epochs: 50
+  
+  # Optimizer
+  optimizer: 'AdamW'
+  lr: 0.0001
+  weight_decay: 0.01
+  
+  # Learning rate scheduler
+  scheduler: 'CosineAnnealingLR'  # or 'ReduceLROnPlateau', 'StepLR'
+  scheduler_params:
+    T_max: 50  # for CosineAnnealingLR
+    eta_min: 0.000001
+    # patience: 5  # for ReduceLROnPlateau
+    # factor: 0.5
+  
+  # Gradient accumulation
+  accumulation_steps: 4
+  
+  # Mixed precision training
+  use_amp: true
+  
+  # Gradient clipping
+  max_grad_norm: 1.0
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+  
+  # Loss function
+  # For regression: 'MSE', 'MAE', 'Huber', 'SmoothL1'
+  # For classification: 'BCE', 'CrossEntropy', 'FocalLoss'
+  loss_function: 'MSE'
+  
+  # For Huber loss
+  huber_delta: 1.0
+  
+  # For Focal loss (classification)
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  
+  # Regularization
+  l1_lambda: 0.0  # L1 regularization on output layer
+  
+  # Freeze encoder (only train LSTM and output layer)
+  freeze_encoder: false
+  freeze_epochs: 0  # Freeze encoder for first N epochs
+
+# ============================================================================
+# VALIDATION & EVALUATION
+# ============================================================================
+evaluation:
+  # Validation frequency
+  eval_interval: 1  # Evaluate every N epochs
+  
+  # Metrics to compute
+  # For regression: 'MSE', 'MAE', 'R2', 'PearsonR', 'SpearmanR'
+  # For classification: 'Accuracy', 'F1', 'AUC', 'Precision', 'Recall'
+  metrics:
+    - 'MSE'
+    - 'MAE'
+    - 'R2'
+    - 'PearsonR'
+    - 'SpearmanR'
+  
+  # Primary metric for model selection
+  primary_metric: 'R2'
+  higher_is_better: true  # true for R2, F1, AUC; false for MSE, MAE
+  
+  # Save predictions
+  save_predictions: true
+  save_attention_weights: false  # Save attention weights for interpretation
+
+# ============================================================================
+# LOGGING & SAVING
+# ============================================================================
+logging:
+  # Output directory
+  output_dir: '/home/boshra95/scratch/stages/sleepfm_format/cognitive_models'
+  
+  # Experiment name (will add timestamp)
+  experiment_name: 'stages_cognitive'
+  
+  # Logging frequency
+  log_interval: 10  # Log every N batches
+  
+  # Weights & Biases
+  use_wandb: false
+  wandb_project: 'stages_cognitive_prediction'
+  wandb_entity: null  # Your W&B username/team
+  
+  # TensorBoard
+  use_tensorboard: true
+  
+  # Save checkpoints
+  save_checkpoint_interval: 5  # Save every N epochs
+  save_best_only: false  # Also save checkpoints at regular intervals
+  
+  # Keep top K checkpoints
+  keep_top_k: 3
+
+# ============================================================================
+# SYSTEM CONFIGURATION
+# ============================================================================
+system:
+  # Random seed for reproducibility
+  seed: 42
+  
+  # Device
+  device: 'cuda'  # 'cuda' or 'cpu'
+  
+  # DataLoader
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 2
+  
+  # Distributed training (if using multiple GPUs)
+  distributed: false
+  world_size: 1
+  local_rank: 0
+
+# ============================================================================
+# PREPROCESSING (for embeddings)
+# ============================================================================
+preprocessing:
+  # If using cached embeddings
+  embeddings_dir: '/home/boshra95/scratch/stages/sleepfm_format/embeddings'
+  
+  # Generate embeddings on-the-fly or use cached
+  generate_embeddings: true  # false = use cached embeddings
+  
+  # Embedding aggregation method
+  # Options: 'mean', 'max', 'attention', 'lstm'
+  aggregation_method: 'mean'
+  
+  # Standardization
+  standardize_embeddings: false  # Usually not needed if using pretrained features
+  
+  # Sleep stage filtering (optional)
+  # Filter embeddings to specific sleep stages
+  use_sleep_stage_filter: false
+  sleep_stages: ['Stage1', 'Stage2', 'Stage3', 'REM']  # Empty = use all stages
+  sleep_stages_path: null  # Path to sleep stage annotations
+
+# ============================================================================
+# ADVANCED OPTIONS
+# ============================================================================
+advanced:
+  # Curriculum learning
+  curriculum_learning: false
+  curriculum_schedule: 'linear'  # 'linear', 'exponential'
+  
+  # Data augmentation
+  augmentation:
+    enabled: false
+    mixup_alpha: 0.2
+    cutmix_alpha: 0.0
+    
+  # Multi-task learning (predict multiple cognitive scores)
+  multi_task: false
+  auxiliary_targets: []  # ['working_memory', 'episodic_memory']
+  auxiliary_loss_weight: 0.3
+  
+  # Ensemble
+  ensemble: false
+  num_ensemble_models: 5
+  
+  # Interpretability
+  compute_gradcam: false
+  compute_shap: false
