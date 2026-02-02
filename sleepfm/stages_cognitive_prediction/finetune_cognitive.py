@@ -47,14 +47,11 @@ if sleepfm_root not in sys.path:
 from sleepfm.utils import load_config, load_data, save_data, count_parameters
 from sleepfm.models.models import SetTransformer
 from sleepfm.stages_cognitive_prediction.models import (
-    CognitiveRegressionLSTM,
-    CognitiveClassificationLSTM,
-    CognitiveLSTMWithDemo,
-    CognitiveEmbeddingLSTM
+    CognitivePredictionModel,
+    create_cognitive_model
 )
 from sleepfm.stages_cognitive_prediction.dataset import (
     CognitivePredictionDataset,
-    CognitivePredictionDatasetWithEmbeddings,
     cognitive_collate_fn
 )
 
@@ -86,31 +83,60 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
     
     if pretrained_type == 'base':
         # Load base SetTransformer model
-        model_config = config['model']['params']
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        
+        # Try to load config from checkpoint directory
+        checkpoint_dir = Path(checkpoint_path).parent
+        config_file = checkpoint_dir / "config.json"
+        
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                checkpoint_config = json.load(f)
+            
+            # Use checkpoint config for model architecture
+            num_layers = checkpoint_config.get('num_layers', 6)
+            embed_dim = checkpoint_config.get('embed_dim', 128)
+            num_heads = checkpoint_config.get('num_heads', 8)
+            pooling_head = checkpoint_config.get('pooling_head', 8)
+            dropout = checkpoint_config.get('dropout', 0.3)
+            
+            logger.info(f"Using checkpoint config: num_layers={num_layers}, embed_dim={embed_dim}")
+        else:
+            # Fallback to config file
+            logger.warning(f"Config file not found at {config_file}, using config from YAML")
+            model_config = config['model']['params']
+            num_layers = model_config.get('num_layers', 6)
+            embed_dim = model_config['embed_dim']
+            num_heads = model_config['num_heads']
+            pooling_head = model_config['pooling_head']
+            dropout = model_config['dropout']
         
         model = SetTransformer(
             in_channels=4,  # Number of modalities
             patch_size=config['data']['chunk_size'],
-            embed_dim=model_config['embed_dim'],
-            num_heads=model_config['num_heads'],
-            num_layers=model_config['num_layers'],
-            pooling_head=model_config['pooling_head'],
-            dropout=model_config['dropout'],
-            max_seq_length=model_config['max_seq_length']
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            pooling_head=pooling_head,
+            dropout=dropout,
+            max_seq_length=config['model']['params']['max_seq_length']
         )
         
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        
-        # Handle different checkpoint formats
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        elif 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
+        # Extract state dict and handle DataParallel 'module.' prefix
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
         else:
-            model.load_state_dict(checkpoint)
+            state_dict = checkpoint
         
-        logger.info("Loaded base SetTransformer model")
+        # Remove 'module.' prefix if present (from DataParallel training)
+        if list(state_dict.keys())[0].startswith('module.'):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            logger.info("Removed 'module.' prefix from checkpoint keys")
+        
+        model.load_state_dict(state_dict)
+        logger.info(f"Loaded base SetTransformer model with {num_layers} layers")
         
     elif pretrained_type == 'diagnosis':
         # Load diagnosis fine-tuned model
@@ -135,6 +161,11 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
             state_dict = checkpoint['model_state_dict']
         else:
             state_dict = checkpoint
+        
+        # Remove 'module.' prefix if present
+        if list(state_dict.keys())[0].startswith('module.'):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            logger.info("Removed 'module.' prefix from checkpoint keys")
         
         # Filter state dict to only SetTransformer components
         transformer_state = {}
@@ -428,28 +459,33 @@ def train_epoch(
     optimizer.zero_grad()
     
     for batch_idx, batch in enumerate(pbar):
+        # Unpack batch: (x_data, labels, demographics, masks, subject_ids)
+        x_data, labels, demographics, masks, subject_ids = batch
+        
         # Move to device
-        embeddings = batch['embeddings'].to(device)
-        labels = batch['labels'].to(device)
-        padding_mask = batch['padding_mask'].to(device)
-        quality_mask = batch['quality_mask'].to(device) if batch['quality_mask'] is not None else None
-        demographics = batch['demographics'].to(device) if use_demographics else None
+        x_data = x_data.to(device)
+        labels = labels.to(device)
+        masks = masks.to(device)
+        if demographics is not None:
+            demographics = demographics.to(device)
         
         # Forward pass
         if use_amp:
             with autocast():
-                if use_demographics and demographics is not None:
-                    outputs = model(embeddings, demographics, padding_mask, quality_mask)
-                else:
-                    outputs = model(embeddings, None, padding_mask, quality_mask)
+                outputs = model(x_data, masks, demographics)
+                
+                # Handle regression vs classification
+                if task_type == 'regression':
+                    outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
                 
                 loss = criterion(outputs, labels)
                 loss = loss / accumulation_steps
         else:
-            if use_demographics and demographics is not None:
-                outputs = model(embeddings, demographics, padding_mask, quality_mask)
-            else:
-                outputs = model(embeddings, None, padding_mask, quality_mask)
+            outputs = model(x_data, masks, demographics)
+            
+            # Handle regression vs classification
+            if task_type == 'regression':
+                outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
             
             loss = criterion(outputs, labels)
             loss = loss / accumulation_steps
@@ -523,18 +559,22 @@ def validate(
     
     with torch.no_grad():
         for batch in pbar:
+            # Unpack batch: (x_data, labels, demographics, masks, subject_ids)
+            x_data, labels, demographics, masks, subject_ids = batch
+            
             # Move to device
-            embeddings = batch['embeddings'].to(device)
-            labels = batch['labels'].to(device)
-            padding_mask = batch['padding_mask'].to(device)
-            quality_mask = batch['quality_mask'].to(device) if batch['quality_mask'] is not None else None
-            demographics = batch['demographics'].to(device) if use_demographics else None
+            x_data = x_data.to(device)
+            labels = labels.to(device)
+            masks = masks.to(device)
+            if demographics is not None:
+                demographics = demographics.to(device)
             
             # Forward pass
-            if use_demographics and demographics is not None:
-                outputs = model(embeddings, demographics, padding_mask, quality_mask)
-            else:
-                outputs = model(embeddings, None, padding_mask, quality_mask)
+            outputs = model(x_data, masks, demographics)
+            
+            # Handle regression vs classification
+            if task_type == 'regression':
+                outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
             
             loss = criterion(outputs, labels)
             
@@ -649,31 +689,16 @@ def main(config_path: str):
     device = torch.device(config['system']['device'] if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # Load channel groups
-    channel_groups = load_data(config['data']['channel_groups_path'])
-    
-    # Load pretrained model (only if not using cached embeddings)
-    if config['preprocessing']['generate_embeddings']:
-        pretrained_model = load_pretrained_model(config, device)
-    else:
-        pretrained_model = None
-        logger.info("Using cached embeddings, skipping pretrained model loading")
-    
-    # Create cognitive prediction model
-    model = create_cognitive_model(config, pretrained_model, device)
+    # Create cognitive prediction model (works with pre-computed embeddings)
+    model = create_model(config, device)
     
     # Create datasets
     logger.info("Loading datasets...")
     
-    # Use embeddings dataset if not generating on-the-fly
-    if not config['preprocessing']['generate_embeddings']:
-        train_dataset = CognitivePredictionDatasetWithEmbeddings(config, split='train')
-        val_dataset = CognitivePredictionDatasetWithEmbeddings(config, split='val')
-        test_dataset = CognitivePredictionDatasetWithEmbeddings(config, split='test')
-    else:
-        # Would need to implement on-the-fly embedding generation
-        raise NotImplementedError("On-the-fly embedding generation not yet implemented. "
-                                "Please use cached embeddings for now.")
+    # Load datasets from pre-computed embeddings
+    train_dataset = CognitivePredictionDataset(config, split='train')
+    val_dataset = CognitivePredictionDataset(config, split='val')
+    test_dataset = CognitivePredictionDataset(config, split='test')
     
     # Create dataloaders
     train_loader = DataLoader(

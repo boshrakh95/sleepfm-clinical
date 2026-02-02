@@ -1,0 +1,46 @@
+# Test config for embedding generation
+task:
+  task_type: 'classification'
+  target: 'sustained_attention'
+  use_demographics: true
+
+model:
+  name: 'CognitivePredictionModel'
+  pretrained_model: 'base'
+  pretrained_checkpoint: '/home/boshra95/sleepfm-clinical/sleepfm/checkpoints/model_base/best.pt'
+  params:
+    embed_dim: 128
+    num_heads: 4
+    num_layers: 2
+    pooling_head: 4
+    dropout: 0.1
+    max_seq_length: null
+
+data:
+  data_path: '/home/boshra95/scratch/stages/sleepfm_format/hdf5_data'
+  labels_path: '/home/boshra95/scratch/stages/sleepfm_format/labels/labels_with_demographics.csv'
+  quality_path: '/home/boshra95/scratch/stages/sleepfm_format/quality_metadata'
+  split_path: '/home/boshra95/sleepfm-clinical/sleepfm/configs/dataset_split.json'
+  channel_groups_path: '/home/boshra95/sleepfm-clinical/sleepfm/configs/channel_groups.json'
+  modality_types: ["BAS", "RESP", "EKG", "EMG"]
+  max_channels:
+    BAS: 10
+    RESP: 7
+    EKG: 2
+    EMG: 4
+  sampling_freq: 128
+  sampling_duration: 5
+  patch_size: 640
+
+preprocessing:
+  embeddings_dir: '/home/boshra95/scratch/stages/sleepfm_format/test_embeddings'
+  generate_embeddings: true
+  save_granular_embeddings: false  # Only save aggregated (5-min) embeddings
+  exclude_channels: []  # List of channel names to exclude, e.g., ['AIRFLOW', 'FLOW']
+
+system:
+  seed: 42
+  device: 'cpu'
+  num_workers: 1
+  batch_size: 2
+  pin_memory: false

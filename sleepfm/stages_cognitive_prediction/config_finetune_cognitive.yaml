@@ -33,12 +33,12 @@ task:
 # MODEL CONFIGURATION
 # ============================================================================
 model:
-  # Model architecture: Always use 'CognitiveEmbeddingLSTM'
-  # This model automatically adapts based on:
+  # Model architecture: CognitivePredictionModel
+  # Based on DiagnosisFinetuneFullLSTMCOXPHWithDemo structure
+  # Automatically adapts based on:
   #   - task.task_type ('regression' or 'classification')
   #   - task.use_demographics (true or false)
-  # NO need to change model name when switching between regression/classification or demographics on/off
-  name: 'CognitiveEmbeddingLSTM'
+  name: 'CognitivePredictionModel'
   
   # Pre-trained model to load
   # Options: 'base' or 'diagnosis'
@@ -53,28 +53,12 @@ model:
   
   # Model parameters
   params:
-    embed_dim: 128  # Must match pretrained model
-    num_heads: 8
-    num_layers: 2
-    pooling_head: 8
-    dropout: 0.3
-    max_seq_length: 6480  # Maximum number of 5-min chunks (~540 hours)
-    
-    # LSTM parameters
-    lstm_hidden_dim: 128
-    lstm_num_layers: 2
-    lstm_dropout: 0.3
-    lstm_bidirectional: true
-    
-    # Output layer
-    # NOTE: num_classes is set automatically by the code based on task_type:
-    #   - task_type: 'regression' → num_classes = 1 (single output)
-    #   - task_type: 'classification' → num_classes = 2 (binary logits)
-    # You can leave this value as-is; it will be overridden automatically
-    num_classes: 2
-    
-    # Demographics embedding dimension (only used if task.use_demographics: true)
-    demo_embed_dim: 16
+    embed_dim: 128  # From checkpoint
+    num_heads: 4  # For task model (not pretrained SetTransformer)
+    num_layers: 2  # LSTM layers
+    pooling_head: 4  # For spatial pooling across modalities
+    dropout: 0.1  # Task model dropout
+    max_seq_length: null  # null = unlimited, or set to max number of 5-min chunks expected
 
 # ============================================================================
 # DATA CONFIGURATION
@@ -95,30 +79,21 @@ data:
   # Channel groups configuration
   channel_groups_path: '/home/boshra95/sleepfm-clinical/sleepfm/configs/channel_groups.json'
   
-  # Modalities to use
+  # Modalities to use (must match pretrained model)
   modality_types: ["BAS", "RESP", "EKG", "EMG"]
   
-  # Channels to exclude from all modalities
-  # Example to exclude FLOW channel: exclude_channels: ["Flow", "FLOW", "flow"]
-  # Matching is case-insensitive, so you only need one variant
-  # Common exclusions: ["Flow"] to exclude respiratory flow
-  # Leave empty list [] to include all channels
-  exclude_channels: []  # Add channel names to exclude
-  
-  # Maximum channels per modality (for padding)
+  # Maximum channels per modality (from pretrained model checkpoint)
+  # These values MUST match the pretrained model's training configuration
   max_channels:
-    BAS: 6   # C3-M2, C4-M1, O1-M2, O2-M1, EOG(L), EOG(R)
-    RESP: 3  # Flow, Thor, ABD
-    EKG: 1   # EKG
-    EMG: 3   # CHIN, RLEG, LLEG
+    BAS: 10   # From checkpoint config: BAS_CHANNELS
+    RESP: 7   # From checkpoint config: RESP_CHANNELS
+    EKG: 2    # From checkpoint config: EKG_CHANNELS
+    EMG: 4    # From checkpoint config: EMG_CHANNELS
   
-  # Sampling parameters
-  sampling_freq: 128  # Hz
-  chunk_duration: 300  # seconds (5 minutes)
-  chunk_size: 38400  # 5 * 60 * 128
-  
-  # Aggregation window for embeddings
-  aggregation_window: 10  # Number of 5-min chunks to aggregate (50 minutes) (in the paper: 96 for 8 hours)
+  # Sampling parameters (from pretrained model checkpoint)
+  sampling_freq: 128  # Hz (from checkpoint)
+  sampling_duration: 5  # minutes (5-minute windows for embedding generation)
+  patch_size: 640  # 5 seconds * 128 Hz (from checkpoint - for model internal processing)
   
   # Data loading
   max_files: null  # null = use all files, or specify number for debugging
@@ -243,7 +218,8 @@ system:
   device: 'cuda'  # 'cuda' or 'cpu'
   
   # DataLoader
-  num_workers: 8
+  num_workers: 4  # For embedding generation
+  batch_size: 16  # For embedding generation
   pin_memory: true
   prefetch_factor: 2
   
@@ -263,6 +239,16 @@ preprocessing:
   # Set to TRUE for on-the-fly embedding generation (NOT YET IMPLEMENTED)
   # You should run generate_embeddings.py first, then set this to false
   generate_embeddings: false  # false = use cached embeddings (RECOMMENDED)
+  
+  # Save granular (5-second level) embeddings in addition to aggregated (5-minute level)
+  # Default: false (only save aggregated embeddings which are used for downstream tasks)
+  # Set to true if you want both aggregated and granular embeddings
+  save_granular_embeddings: false
+  
+  # Channel exclusion: List of channel names to exclude from analysis
+  # Example: ['AIRFLOW', 'FLOW', 'Airflow', 'NEW AIR', 'NEWAIR', 'New Air']
+  # Empty list means no channels are excluded
+  exclude_channels: ["FLOW"]
   
   # Embedding aggregation method
   # Options: 'mean', 'max', 'attention', 'lstm'

@@ -5,11 +5,11 @@ Generate Embeddings for STAGES Cognitive Prediction
 
 Generate and cache embeddings using pre-trained SleepFM model.
 
-This script:
+This script follows the demo.py approach:
 1. Loads pre-trained SetTransformer model
-2. Processes all HDF5 files in the dataset
-3. Generates embeddings for each PSG file
-4. Saves embeddings to disk for faster training
+2. Processes each modality separately (BAS, RESP, EKG, EMG)
+3. Generates both 5-min aggregated and granular 5-sec embeddings
+4. Saves embeddings to HDF5 files (one per subject, with modalities as datasets)
 
 Usage:
     python generate_embeddings.py --config config_finetune_cognitive.yaml
@@ -22,7 +22,9 @@ import os
 import sys
 import argparse
 import yaml
+import json
 import torch
+import torch.nn as nn
 import h5py
 import numpy as np
 from pathlib import Path
@@ -36,168 +38,90 @@ sleepfm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if sleepfm_root not in sys.path:
     sys.path.insert(0, sleepfm_root)
 
-from sleepfm.utils import load_config, load_data
+from sleepfm.utils import load_config, load_data, count_parameters
 from sleepfm.models.models import SetTransformer
 from sleepfm.models.dataset import SetTransformerDataset, collate_fn
 from torch.utils.data import DataLoader
 
 
 def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
-    """Load pre-trained SetTransformer model."""
-    pretrained_type = config['model']['pretrained_model']
+    """Load pre-trained SetTransformer model (following demo.py approach)."""
     checkpoint_path = config['model']['pretrained_checkpoint']
     
-    logger.info(f"Loading pretrained {pretrained_type} model from {checkpoint_path}")
+    logger.info(f"Loading pretrained model from {checkpoint_path}")
     
-    model_params = config['model']['params']
+    # Load checkpoint config
+    checkpoint_dir = Path(checkpoint_path).parent
+    config_file = checkpoint_dir / "config.json"
     
+    if not config_file.exists():
+        raise FileNotFoundError(f"Config file not found at {config_file}")
+    
+    with open(config_file, 'r') as f:
+        checkpoint_config = json.load(f)
+    
+    # Extract model parameters from checkpoint config
+    in_channels = checkpoint_config['in_channels']
+    patch_size = checkpoint_config['patch_size']
+    embed_dim = checkpoint_config['embed_dim']
+    num_heads = checkpoint_config['num_heads']
+    num_layers = checkpoint_config['num_layers']
+    pooling_head = checkpoint_config.get('pooling_head', 8)
+    max_seq_length = checkpoint_config.get('max_seq_length', 128)
+    dropout = 0.0  # Set to 0 for inference
+    
+    logger.info(f"Model architecture: num_layers={num_layers}, embed_dim={embed_dim}, patch_size={patch_size}, max_seq_length={max_seq_length}")
+    
+    # Create model (matching demo.py exactly)
     model = SetTransformer(
-        in_channels=len(config['data']['modality_types']),
-        patch_size=config['data']['chunk_size'],
-        embed_dim=model_params['embed_dim'],
-        num_heads=model_params['num_heads'],
-        num_layers=model_params['num_layers'],
-        pooling_head=model_params['pooling_head'],
-        dropout=model_params['dropout'],
-        max_seq_length=model_params['max_seq_length']
+        in_channels=in_channels,
+        patch_size=patch_size,
+        embed_dim=embed_dim,
+        num_heads=num_heads,
+        num_layers=num_layers,
+        pooling_head=pooling_head,
+        dropout=dropout,
+        max_seq_length=max_seq_length
     )
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    elif 'state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['state_dict'])
+    # Extract state dict
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
     else:
-        model.load_state_dict(checkpoint)
+        state_dict = checkpoint
     
+    # Handle DataParallel prefix - match demo.py logic exactly
+    if list(state_dict.keys())[0].startswith('module.') and device.type != "cuda":
+        # Checkpoint has 'module.' but we're on CPU, remove prefix
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        logger.info("Removed 'module.' prefix from checkpoint keys (CPU mode)")
+    
+    # Apply DataParallel BEFORE loading state dict (like demo)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+        logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+    
+    # Move to device BEFORE loading state dict
     model = model.to(device)
+    
+    # Now load state dict
+    model.load_state_dict(state_dict)
     model.eval()
     
-    logger.info("Loaded pretrained model")
+    total_layers, total_params = count_parameters(model)
+    logger.info(f'Trainable parameters: {total_params / 1e6:.2f} million')
+    logger.info(f'Number of layers: {total_layers}')
     
-    return model
-
-
-def generate_embeddings_for_file(
-    file_path: str,
-    model: SetTransformer,
-    channel_groups: Dict,
-    config: Dict,
-    device: torch.device
-) -> np.ndarray:
-    """Generate embeddings for a single HDF5 file.
-    
-    Args:
-        file_path: Path to HDF5 file
-        model: Pre-trained SetTransformer
-        channel_groups: Channel group mappings
-        config: Configuration dictionary
-        device: Device to run model on
-    
-    Returns:
-        embeddings: Array of embeddings [num_chunks, embed_dim]
-    """
-    chunk_size = config['data']['chunk_size']
-    modality_types = config['data']['modality_types']
-    max_channels_config = config['data']['max_channels']
-    exclude_channels = config['data'].get('exclude_channels', [])
-    
-    # Create set of excluded channel names (case-insensitive)
-    excluded_set = set([ch.lower() for ch in exclude_channels])
-    
-    # Log excluded channels if any
-    if excluded_set:
-        logger.debug(f"Excluding channels: {exclude_channels}")
-    
-    embeddings_list = []
-    
-    with h5py.File(file_path, 'r') as hf:
-        # Get available channels
-        available_channels = list(hf.keys())
-        
-        # Track excluded channels found in this file
-        excluded_found = [ch for ch in available_channels if ch.lower() in excluded_set]
-        if excluded_found:
-            logger.debug(f"Excluding {len(excluded_found)} channel(s) from {Path(file_path).stem}: {excluded_found}")
-        
-        # Group by modality
-        modality_to_channels = {mod: [] for mod in modality_types}
-        
-        for channel in available_channels:
-            # Skip excluded channels
-            if channel.lower() in excluded_set:
-                continue
-                
-            for modality in modality_types:
-                if channel in channel_groups[modality]:
-                    modality_to_channels[modality].append(channel)
-                    break
-        
-        # Get signal length
-        first_channel = available_channels[0]
-        signal_length = hf[first_channel].shape[0]
-        
-        # Calculate number of chunks
-        num_chunks = signal_length // chunk_size
-        
-        # Process each chunk
-        for chunk_idx in range(num_chunks):
-            chunk_start = chunk_idx * chunk_size
-            chunk_end = chunk_start + chunk_size
-            
-            # Load data for this chunk
-            modality_data_list = []
-            modality_masks = []
-            
-            for modality in modality_types:
-                channels = modality_to_channels[modality]
-                max_channels = max_channels_config[modality]
-                
-                # Initialize with zeros
-                data = np.zeros((max_channels, chunk_size), dtype=np.float32)
-                mask = np.ones(max_channels, dtype=bool)  # True = padding
-                
-                # Fill with actual data
-                for idx, channel in enumerate(channels[:max_channels]):
-                    signal = hf[channel][chunk_start:chunk_end]
-                    data[idx, :len(signal)] = signal
-                    mask[idx] = False  # False = valid data
-                
-                modality_data_list.append(torch.from_numpy(data).unsqueeze(0))  # [1, C, T]
-                modality_masks.append(torch.from_numpy(mask).unsqueeze(0))  # [1, C]
-            
-            # Move to device
-            modality_data_list = [d.to(device) for d in modality_data_list]
-            modality_masks = [m.to(device) for m in modality_masks]
-            
-            # Generate embedding
-            with torch.no_grad():
-                # Stack modalities: [1, num_modalities, C, T]
-                x = torch.stack(modality_data_list, dim=1).squeeze(0)  # [num_modalities, C, T]
-                x = x.unsqueeze(0)  # [1, num_modalities, C, T]
-                
-                # Stack masks: [1, num_modalities, C]
-                mask = torch.stack(modality_masks, dim=1).squeeze(0)  # [num_modalities, C]
-                mask = mask.unsqueeze(0)  # [1, num_modalities, C]
-                
-                # Get embedding
-                embedding, _ = model(x, mask)  # [1, embed_dim]
-                
-                embeddings_list.append(embedding.cpu().numpy())
-        
-    # Stack all embeddings
-    if embeddings_list:
-        embeddings = np.concatenate(embeddings_list, axis=0)  # [num_chunks, embed_dim]
-    else:
-        embeddings = np.array([])
-    
-    return embeddings
+    return model, checkpoint_config
 
 
 def main(config_path: str):
-    """Main embedding generation function."""
+    """Main embedding generation function (following demo.py approach)."""
     # Load configuration
     config = load_config(config_path)
     
@@ -205,21 +129,24 @@ def main(config_path: str):
     output_dir = Path(config['preprocessing']['embeddings_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Option to save granular (5-sec) embeddings in addition to aggregated (5-min)
+    save_granular = config['preprocessing'].get('save_granular_embeddings', False)
+    
+    # Create separate directories for aggregated and granular (like demo)
+    if save_granular:
+        output_dir_granular = output_dir / "granular"
+        output_dir_granular.mkdir(parents=True, exist_ok=True)
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = output_dir / f"embedding_generation_{timestamp}.log"
     logger.add(log_file, rotation="100 MB", retention="10 days", level="DEBUG")
     
     logger.info("="*80)
-    logger.info("STAGES Embedding Generation")
+    logger.info("STAGES Embedding Generation (Demo-Compatible)")
     logger.info("="*80)
-    logger.info(f"Output directory: {output_dir}")
-    
-    # Log channel exclusions if any
-    exclude_channels = config['data'].get('exclude_channels', [])
-    if exclude_channels:
-        logger.info(f"Excluding channels: {exclude_channels}")
-    else:
-        logger.info("No channels excluded (using all available channels)")
+    logger.info(f"Output directory (aggregated): {output_dir}")
+    if save_granular:
+        logger.info(f"Output directory (granular): {output_dir_granular}")
     
     # Set device
     device = torch.device(config['system']['device'] if torch.cuda.is_available() else 'cpu')
@@ -228,16 +155,34 @@ def main(config_path: str):
     # Load channel groups
     channel_groups = load_data(config['data']['channel_groups_path'])
     
-    # Load pretrained model
-    model = load_pretrained_model(config, device)
+    # Get channels to exclude (if specified)
+    exclude_channels = config['preprocessing'].get('exclude_channels', [])
+    if exclude_channels:
+        logger.info(f"Excluding channels: {exclude_channels}")
+        # Remove excluded channels from all modality groups
+        for modality_type in channel_groups:
+            channel_groups[modality_type] = [
+                ch for ch in channel_groups[modality_type] 
+                if ch not in exclude_channels
+            ]
+        logger.info(f"Channel groups after exclusion: {', '.join([f'{k}({len(v)})' for k, v in channel_groups.items()])}")
     
-    # Get all HDF5 files from all splits
+    # Load pretrained model
+    model, checkpoint_config = load_pretrained_model(config, device)
+    
+    # Get modality types from checkpoint config
+    modality_types = checkpoint_config['modality_types']
+    embed_dim = checkpoint_config['embed_dim']
+    logger.info(f"Modality types: {modality_types}")
+    
+    # Get all HDF5 files from splits
     split_path = config['data']['split_path']
     split_data = load_data(split_path)
     
     all_files = []
     for split in ['train', 'val', 'test']:
-        all_files.extend(split_data[split])
+        if split in split_data:
+            all_files.extend(split_data[split])
     
     # Make absolute paths
     data_path = Path(config['data']['data_path'])
@@ -245,58 +190,192 @@ def main(config_path: str):
     
     logger.info(f"Total files to process: {len(all_files)}")
     
+    # Create dataset (for proper data loading like demo)
+    dataset = SetTransformerDataset(
+        checkpoint_config,
+        channel_groups,
+        hdf5_paths=all_files,
+        split="test"  # Doesn't matter for embedding generation
+    )
+    
+    # Create dataloader
+    batch_size = config.get('system', {}).get('batch_size', 16)
+    num_workers = config.get('system', {}).get('num_workers', 4)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+        collate_fn=collate_fn
+    )
+    
+    logger.info(f"DataLoader created with batch_size={batch_size}, num_workers={num_workers}")
+    
     # Generate embeddings
-    processed_count = 0
+    processed_subjects = set()
     skipped_count = 0
     error_count = 0
     
-    for file_path in tqdm(all_files, desc="Generating embeddings"):
-        file_path = Path(file_path)
-        subject_id = file_path.stem
-        
-        # Check if already exists
-        output_file = output_dir / f"{subject_id}.npy"
-        
-        if output_file.exists():
-            logger.debug(f"Skipping {subject_id} (already exists)")
-            skipped_count += 1
-            continue
-        
-        try:
-            # Generate embeddings
-            embeddings = generate_embeddings_for_file(
-                str(file_path),
-                model,
-                channel_groups,
-                config,
-                device
-            )
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Generating embeddings"):
+            try:
+                # Unpack batch (following demo.py)
+                batch_data, mask_list, file_paths, dset_names_list, chunk_starts = batch
+                
+                # Separate modalities
+                modality_data = {}
+                modality_masks = {}
+                
+                for idx, modality_type in enumerate(modality_types):
+                    modality_data[modality_type] = batch_data[idx].to(device, dtype=torch.float)
+                    modality_masks[modality_type] = mask_list[idx].to(device, dtype=torch.bool)
+                
+                # Generate embeddings for each modality separately (exactly like demo)
+                embeddings = [
+                    model(modality_data[modality_types[0]], modality_masks[modality_types[0]]),
+                    model(modality_data[modality_types[1]], modality_masks[modality_types[1]]),
+                    model(modality_data[modality_types[2]], modality_masks[modality_types[2]]),
+                    model(modality_data[modality_types[3]], modality_masks[modality_types[3]]),
+                ]
+                
+                # Model returns tuple: (5-min aggregated, granular 5-sec)
+                # Extract aggregated embeddings: e[0] is the 5-min aggregated embedding
+                embeddings_agg = [e[0].unsqueeze(1) for e in embeddings]
+                
+                # Extract granular embeddings if needed: e[1] is the granular 5-sec embedding
+                if save_granular:
+                    embeddings_granular = [e[1] for e in embeddings]
+                
+                # Save AGGREGATED embeddings (5-min level) - matching demo exactly
+                for i in range(len(file_paths)):
+                    file_path = file_paths[i]
+                    subject_id = Path(file_path).stem
+                    chunk_start = chunk_starts[i]
+                    
+                    output_file = output_dir / f"{subject_id}.hdf5"
+                    
+                    try:
+                        # Save aggregated embeddings (main embeddings for downstream tasks)
+                        with h5py.File(output_file, 'a') as hdf5_file:
+                            for modality_idx, modality_type in enumerate(modality_types):
+                                agg_data = embeddings_agg[modality_idx][i].cpu().numpy()  # [seq_len, 1, embed_dim]
+                                
+                                if modality_type in hdf5_file:
+                                    dset = hdf5_file[modality_type]
+                                    # Calculate position: chunk_start is in samples, convert to 5-min chunks
+                                    chunk_start_correct = chunk_start // (embed_dim * 5 * 60)
+                                    chunk_end = chunk_start_correct + agg_data.shape[0]
+                                    if dset.shape[0] < chunk_end:
+                                        dset.resize((chunk_end,) + tuple(agg_data.shape[1:]))
+                                    dset[chunk_start_correct:chunk_end] = agg_data
+                                else:
+                                    hdf5_file.create_dataset(
+                                        modality_type,
+                                        data=agg_data,
+                                        chunks=(embed_dim,) + tuple(agg_data.shape[1:]),
+                                        maxshape=(None,) + tuple(agg_data.shape[1:])
+                                    )
+                        
+                        processed_subjects.add(subject_id)
+                    
+                    except OSError as e:
+                        if "truncated file" in str(e) or "Unable to synchronously open file" in str(e):
+                            # Corrupted HDF5 file - remove it and recreate
+                            logger.warning(f"Corrupted HDF5 file detected for {subject_id}, removing and recreating...")
+                            if output_file.exists():
+                                output_file.unlink()
+                            
+                            # Recreate the file
+                            try:
+                                with h5py.File(output_file, 'w') as hdf5_file:
+                                    for modality_idx, modality_type in enumerate(modality_types):
+                                        agg_data = embeddings_agg[modality_idx][i].cpu().numpy()
+                                        hdf5_file.create_dataset(
+                                            modality_type,
+                                            data=agg_data,
+                                            chunks=(embed_dim,) + tuple(agg_data.shape[1:]),
+                                            maxshape=(None,) + tuple(agg_data.shape[1:])
+                                        )
+                                processed_subjects.add(subject_id)
+                                logger.info(f"Successfully recreated embeddings for {subject_id}")
+                            except Exception as e2:
+                                logger.error(f"Failed to recreate embeddings for {subject_id}: {e2}")
+                                error_count += 1
+                        else:
+                            logger.error(f"Error saving embeddings for {subject_id}: {e}")
+                            error_count += 1
+                    except Exception as e:
+                        logger.error(f"Unexpected error saving embeddings for {subject_id}: {e}")
+                        error_count += 1
+                
+                # Save GRANULAR embeddings (5-sec level) if requested
+                if save_granular:
+                    for i in range(len(file_paths)):
+                        file_path = file_paths[i]
+                        subject_id = Path(file_path).stem
+                        chunk_start = chunk_starts[i]
+                        
+                        output_file_granular = output_dir_granular / f"{subject_id}.hdf5"
+                        
+                        try:
+                            with h5py.File(output_file_granular, 'a') as hdf5_file:
+                                for modality_idx, modality_type in enumerate(modality_types):
+                                    granular_data = embeddings_granular[modality_idx][i].cpu().numpy()
+                                    
+                                    if modality_type in hdf5_file:
+                                        dset = hdf5_file[modality_type]
+                                        # Granular: chunk_start is in samples, convert to 5-sec chunks
+                                        chunk_start_correct = chunk_start // (embed_dim * 5)
+                                        chunk_end = chunk_start_correct + granular_data.shape[0]
+                                        if dset.shape[0] < chunk_end:
+                                            dset.resize((chunk_end,) + tuple(granular_data.shape[1:]))
+                                        dset[chunk_start_correct:chunk_end] = granular_data
+                                    else:
+                                        hdf5_file.create_dataset(
+                                            modality_type,
+                                            data=granular_data,
+                                            chunks=(embed_dim,) + tuple(granular_data.shape[1:]),
+                                            maxshape=(None,) + tuple(granular_data.shape[1:])
+                                        )
+                        except OSError as e:
+                            if "truncated file" in str(e) or "Unable to synchronously open file" in str(e):
+                                logger.warning(f"Corrupted granular HDF5 file for {subject_id}, removing and recreating...")
+                                if output_file_granular.exists():
+                                    output_file_granular.unlink()
+                                
+                                try:
+                                    with h5py.File(output_file_granular, 'w') as hdf5_file:
+                                        for modality_idx, modality_type in enumerate(modality_types):
+                                            granular_data = embeddings_granular[modality_idx][i].cpu().numpy()
+                                            hdf5_file.create_dataset(
+                                                modality_type,
+                                                data=granular_data,
+                                                chunks=(embed_dim,) + tuple(granular_data.shape[1:]),
+                                                maxshape=(None,) + tuple(granular_data.shape[1:])
+                                            )
+                                    logger.info(f"Successfully recreated granular embeddings for {subject_id}")
+                                except Exception as e2:
+                                    logger.error(f"Failed to recreate granular embeddings for {subject_id}: {e2}")
+                            else:
+                                logger.error(f"Error saving granular embeddings for {subject_id}: {e}")
+                        except Exception as e:
+                            logger.error(f"Unexpected error saving granular embeddings for {subject_id}: {e}")
+                
+                if len(processed_subjects) % 100 == 0:
+                    logger.info(f"Processed {len(processed_subjects)} subjects...")
             
-            if len(embeddings) == 0:
-                logger.warning(f"No embeddings generated for {subject_id}")
+            except Exception as e:
+                logger.error(f"Error processing batch: {e}")
                 error_count += 1
                 continue
-            
-            # Save embeddings
-            np.save(output_file, embeddings)
-            
-            processed_count += 1
-            
-            if processed_count % 100 == 0:
-                logger.info(f"Processed {processed_count} files...")
-        
-        except Exception as e:
-            logger.error(f"Error processing {subject_id}: {e}")
-            error_count += 1
-            continue
     
     # Summary
     logger.info("\n" + "="*80)
     logger.info("Embedding Generation Summary")
     logger.info("="*80)
     logger.info(f"Total files: {len(all_files)}")
-    logger.info(f"Processed: {processed_count}")
-    logger.info(f"Skipped (already exist): {skipped_count}")
+    logger.info(f"Processed subjects: {len(processed_subjects)}")
     logger.info(f"Errors: {error_count}")
     logger.info(f"Output directory: {output_dir}")
     logger.info("="*80)
