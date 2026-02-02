@@ -39,18 +39,21 @@ from loguru import logger
 import random
 from typing import Dict, List, Tuple, Optional
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add sleepfm directory to path for absolute imports
+sleepfm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sleepfm_root not in sys.path:
+    sys.path.insert(0, sleepfm_root)
 
-from utils import load_config, load_data, save_data, count_parameters
-from models.models import SetTransformer
-from stages_cognitive_prediction.models import (
+from sleepfm.utils import load_config, load_data, save_data, count_parameters
+from sleepfm.models.models import SetTransformer
+from sleepfm.stages_cognitive_prediction.models import (
     CognitiveRegressionLSTM,
     CognitiveClassificationLSTM,
     CognitiveLSTMWithDemo,
     CognitiveEmbeddingLSTM
 )
-from stages_cognitive_prediction.dataset import (
+from sleepfm.stages_cognitive_prediction.dataset import (
+    CognitivePredictionDataset,
     CognitivePredictionDatasetWithEmbeddings,
     cognitive_collate_fn
 )

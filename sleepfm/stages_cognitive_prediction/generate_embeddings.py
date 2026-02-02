@@ -31,12 +31,14 @@ from tqdm import tqdm
 from loguru import logger
 from typing import Dict, List
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add sleepfm directory to path for absolute imports
+sleepfm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sleepfm_root not in sys.path:
+    sys.path.insert(0, sleepfm_root)
 
-from utils import load_config, load_data
-from models.models import SetTransformer
-from models.dataset import SetTransformerDataset, collate_fn
+from sleepfm.utils import load_config, load_data
+from sleepfm.models.models import SetTransformer
+from sleepfm.models.dataset import SetTransformerDataset, collate_fn
 from torch.utils.data import DataLoader
 
 

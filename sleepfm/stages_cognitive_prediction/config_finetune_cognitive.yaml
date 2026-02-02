@@ -118,7 +118,7 @@ data:
   chunk_size: 38400  # 5 * 60 * 128
   
   # Aggregation window for embeddings
-  aggregation_window: 5  # Number of 5-min chunks to aggregate (25 minutes)
+  aggregation_window: 10  # Number of 5-min chunks to aggregate (50 minutes) (in the paper: 96 for 8 hours)
   
   # Data loading
   max_files: null  # null = use all files, or specify number for debugging

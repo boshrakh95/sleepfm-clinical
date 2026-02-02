@@ -20,9 +20,12 @@ from typing import Dict, Optional, Tuple
 import sys
 import os
 
-# Add parent directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from models.models import SetTransformer, AttentionPooling
+# Add sleepfm directory to path for absolute imports
+sleepfm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if sleepfm_root not in sys.path:
+    sys.path.insert(0, sleepfm_root)
+
+from sleepfm.models.models import SetTransformer, AttentionPooling
 
 
 class CognitiveRegressionLSTM(nn.Module):
