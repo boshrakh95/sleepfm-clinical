@@ -67,14 +67,19 @@ data:
   # Base directory containing HDF5 files
   data_path: '/home/boshra95/scratch/stages/sleepfm_format/hdf5_data'
   
-  # Labels directory
-  labels_path: '/home/boshra95/scratch/stages/sleepfm_format/labels'
+  # Labels CSV file with cognitive scores and demographics
+  labels_path: '/home/boshra95/scratch/stages/sleepfm_format/labels/labels_with_demographics.csv'
   
   # Quality metadata directory
   quality_path: '/home/boshra95/scratch/stages/sleepfm_format/quality_metadata'
   
   # Split file (will be constructed as dataset_split_{target}.json)
   split_path: '/home/boshra95/scratch/stages/sleepfm_format/splits/dataset_split_sustained_attention.json'
+  
+  # Use available embeddings instead of split file (for testing)
+  # When true: ignores split_path and uses all available embedding files
+  # Automatically creates 60/20/20 train/val/test split from available subjects
+  use_available_subjects: false  # Set to false to use predefined splits
   
   # Channel groups configuration
   channel_groups_path: '/home/boshra95/sleepfm-clinical/sleepfm/configs/channel_groups.json'
@@ -96,7 +101,7 @@ data:
   patch_size: 640  # 5 seconds * 128 Hz (from checkpoint - for model internal processing)
   
   # Data loading
-  max_files: null  # null = use all files, or specify number for debugging
+  max_files: null # null = use all files, or specify number for debugging
   cache_embeddings: true  # Cache embeddings to disk for faster training
 
 # ============================================================================
@@ -104,8 +109,8 @@ data:
 # ============================================================================
 training:
   # Training parameters
-  batch_size: 4
-  epochs: 50
+  batch_size: 2
+  epochs: 1
   
   # Optimizer
   optimizer: 'AdamW'
@@ -115,7 +120,7 @@ training:
   # Learning rate scheduler
   scheduler: 'CosineAnnealingLR'  # or 'ReduceLROnPlateau', 'StepLR'
   scheduler_params:
-    T_max: 50  # for CosineAnnealingLR
+    T_max: 1  # for CosineAnnealingLR
     eta_min: 0.000001
     # patience: 5  # for ReduceLROnPlateau
     # factor: 0.5

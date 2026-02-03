@@ -95,22 +95,21 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
     else:
         state_dict = checkpoint
     
-    # Handle DataParallel prefix - match demo.py logic exactly
-    if list(state_dict.keys())[0].startswith('module.') and device.type != "cuda":
-        # Checkpoint has 'module.' but we're on CPU, remove prefix
+    # Always strip 'module.' prefix if present (checkpoint was saved from DataParallel)
+    if list(state_dict.keys())[0].startswith('module.'):
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        logger.info("Removed 'module.' prefix from checkpoint keys (CPU mode)")
+        logger.info("Removed 'module.' prefix from checkpoint keys")
     
-    # Apply DataParallel BEFORE loading state dict (like demo)
+    # Move to device first
+    model = model.to(device)
+    
+    # Load state dict into non-wrapped model
+    model.load_state_dict(state_dict)
+    
+    # Apply DataParallel AFTER loading state dict
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
         logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
-    
-    # Move to device BEFORE loading state dict
-    model = model.to(device)
-    
-    # Now load state dict
-    model.load_state_dict(state_dict)
     model.eval()
     
     total_layers, total_params = count_parameters(model)
@@ -187,6 +186,12 @@ def main(config_path: str):
     # Make absolute paths
     data_path = Path(config['data']['data_path'])
     all_files = [str(data_path / f) if not Path(f).is_absolute() else f for f in all_files]
+    
+    # Limit number of files if specified (for testing)
+    max_files = config['data'].get('max_files', None)
+    if max_files is not None and max_files > 0:
+        all_files = all_files[:max_files]
+        logger.info(f"Limited to {max_files} files for testing")
     
     logger.info(f"Total files to process: {len(all_files)}")
     

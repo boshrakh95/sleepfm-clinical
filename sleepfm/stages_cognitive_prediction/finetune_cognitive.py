@@ -83,7 +83,7 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
     
     if pretrained_type == 'base':
         # Load base SetTransformer model
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         
         # Try to load config from checkpoint directory
         checkpoint_dir = Path(checkpoint_path).parent
@@ -141,7 +141,7 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
     elif pretrained_type == 'diagnosis':
         # Load diagnosis fine-tuned model
         # Extract the SetTransformer encoder from diagnosis model
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         
         # Create SetTransformer
         model_config = config['model']['params']
@@ -189,114 +189,38 @@ def load_pretrained_model(config: Dict, device: torch.device) -> SetTransformer:
     return model
 
 
-def create_cognitive_model(
+def create_model(
     config: Dict,
-    pretrained_model: Optional[SetTransformer],
     device: torch.device
 ) -> nn.Module:
-    """Create cognitive prediction model.
+    """Create cognitive prediction model using new architecture.
     
     Args:
         config: Configuration dictionary
-        pretrained_model: Pre-trained SetTransformer (None if using cached embeddings)
         device: Device to create model on
     
     Returns:
         Cognitive prediction model
     """
-    model_name = config['model']['name']
-    model_params = config['model']['params']
-    task_type = config['task']['task_type']
-    use_demographics = config['task']['use_demographics']
+    logger.info(f"Creating model: {config['model']['name']}")
     
-    # Determine number of classes
-    if task_type == 'regression':
-        num_classes = 1
-    else:  # classification
-        # For binary classification
-        num_classes = 2
-    
-    freeze_encoder = config['training'].get('freeze_encoder', False)
-    
-    logger.info(f"Creating model: {model_name}")
-    
-    if model_name == 'CognitiveRegressionLSTM':
-        if pretrained_model is None:
-            raise ValueError("CognitiveRegressionLSTM requires pretrained_model")
-        
-        model = CognitiveRegressionLSTM(
-            pretrained_model=pretrained_model,
-            embed_dim=model_params['embed_dim'],
-            lstm_hidden_dim=model_params['lstm_hidden_dim'],
-            lstm_num_layers=model_params['lstm_num_layers'],
-            lstm_dropout=model_params['lstm_dropout'],
-            lstm_bidirectional=model_params['lstm_bidirectional'],
-            dropout=model_params['dropout'],
-            freeze_encoder=freeze_encoder
-        )
-    
-    elif model_name == 'CognitiveClassificationLSTM':
-        if pretrained_model is None:
-            raise ValueError("CognitiveClassificationLSTM requires pretrained_model")
-        
-        model = CognitiveClassificationLSTM(
-            pretrained_model=pretrained_model,
-            embed_dim=model_params['embed_dim'],
-            lstm_hidden_dim=model_params['lstm_hidden_dim'],
-            lstm_num_layers=model_params['lstm_num_layers'],
-            lstm_dropout=model_params['lstm_dropout'],
-            lstm_bidirectional=model_params['lstm_bidirectional'],
-            num_classes=num_classes,
-            dropout=model_params['dropout'],
-            freeze_encoder=freeze_encoder
-        )
-    
-    elif model_name == 'CognitiveLSTMWithDemo':
-        if pretrained_model is None:
-            raise ValueError("CognitiveLSTMWithDemo requires pretrained_model")
-        
-        model = CognitiveLSTMWithDemo(
-            pretrained_model=pretrained_model,
-            embed_dim=model_params['embed_dim'],
-            lstm_hidden_dim=model_params['lstm_hidden_dim'],
-            lstm_num_layers=model_params['lstm_num_layers'],
-            lstm_dropout=model_params['lstm_dropout'],
-            lstm_bidirectional=model_params['lstm_bidirectional'],
-            demo_embed_dim=model_params['demo_embed_dim'],
-            num_classes=num_classes,
-            task_type=task_type,
-            dropout=model_params['dropout'],
-            freeze_encoder=freeze_encoder
-        )
-    
-    elif model_name == 'CognitiveEmbeddingLSTM':
-        # This model works with pre-computed embeddings
-        model = CognitiveEmbeddingLSTM(
-            embed_dim=model_params['embed_dim'],
-            lstm_hidden_dim=model_params['lstm_hidden_dim'],
-            lstm_num_layers=model_params['lstm_num_layers'],
-            lstm_dropout=model_params['lstm_dropout'],
-            lstm_bidirectional=model_params['lstm_bidirectional'],
-            demo_embed_dim=model_params.get('demo_embed_dim', 16),
-            num_classes=num_classes,
-            task_type=task_type,
-            use_demographics=use_demographics,
-            dropout=model_params['dropout']
-        )
-    
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
-    
+    # Use the factory function from models.py
+    model = create_cognitive_model(config)
     model = model.to(device)
     
+    # Apply DataParallel if multiple GPUs
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+        logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+    
     # Count parameters
-    total_params = count_parameters(model)
+    total_layers, total_params = count_parameters(model)
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     
     logger.info(f"Model parameters:")
-    logger.info(f"  Total: {total_params:,}")
-    logger.info(f"  Trainable: {trainable_params:,}")
-    logger.info(f"  Frozen: {total_params - trainable_params:,}")
+    logger.info(f"  Total layers: {total_layers}")
+    logger.info(f"  Total params: {total_params / 1e6:.2f} million")
+    logger.info(f"  Trainable: {trainable_params / 1e6:.2f} million")
     
     return model
 
@@ -453,6 +377,7 @@ def train_epoch(
     log_interval = config['logging']['log_interval']
     use_demographics = config['task']['use_demographics']
     task_type = config['task']['task_type']
+    loss_name = config['training']['loss_function']
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]")
     
@@ -471,23 +396,45 @@ def train_epoch(
         
         # Forward pass
         if use_amp:
-            with autocast():
+            with torch.amp.autocast('cuda'):
                 outputs = model(x_data, masks, demographics)
                 
-                # Handle regression vs classification
+                # Handle output/label shape based on task and loss
                 if task_type == 'regression':
                     outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
+                    labels_processed = labels
+                elif task_type == 'classification':
+                    # For BCE loss, keep outputs as [B, 1] and reshape labels to [B, 1]
+                    if loss_name in ['BCE', 'BCEWithLogitsLoss', 'FocalLoss']:
+                        labels_processed = labels.unsqueeze(-1).float()  # [B] -> [B, 1]
+                    else:
+                        # For CrossEntropy, squeeze outputs to [B] for multi-class
+                        outputs = outputs.squeeze(-1)
+                        labels_processed = labels
+                else:
+                    labels_processed = labels
                 
-                loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels_processed)
                 loss = loss / accumulation_steps
         else:
             outputs = model(x_data, masks, demographics)
             
-            # Handle regression vs classification
+            # Handle output/label shape based on task and loss
             if task_type == 'regression':
                 outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
+                labels_processed = labels
+            elif task_type == 'classification':
+                # For BCE loss, keep outputs as [B, 1] and reshape labels to [B, 1]
+                if loss_name in ['BCE', 'BCEWithLogitsLoss', 'FocalLoss']:
+                    labels_processed = labels.unsqueeze(-1).float()  # [B] -> [B, 1]
+                else:
+                    # For CrossEntropy, squeeze outputs to [B] for multi-class
+                    outputs = outputs.squeeze(-1)
+                    labels_processed = labels
+            else:
+                labels_processed = labels
             
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels_processed)
             loss = loss / accumulation_steps
         
         # Backward pass
@@ -553,6 +500,7 @@ def validate(
     
     use_demographics = config['task']['use_demographics']
     task_type = config['task']['task_type']
+    loss_name = config['training']['loss_function']
     metrics_list = config['evaluation']['metrics']
     
     pbar = tqdm(dataloader, desc=f"[{split.upper()}]")
@@ -572,11 +520,22 @@ def validate(
             # Forward pass
             outputs = model(x_data, masks, demographics)
             
-            # Handle regression vs classification
+            # Handle output/label shape based on task and loss
             if task_type == 'regression':
                 outputs = outputs.squeeze(-1)  # [B, 1] -> [B]
+                labels_processed = labels
+            elif task_type == 'classification':
+                # For BCE loss, keep outputs as [B, 1] and reshape labels to [B, 1]
+                if loss_name in ['BCE', 'BCEWithLogitsLoss', 'FocalLoss']:
+                    labels_processed = labels.unsqueeze(-1).float()  # [B] -> [B, 1]
+                else:
+                    # For CrossEntropy, squeeze outputs to [B] for multi-class
+                    outputs = outputs.squeeze(-1)
+                    labels_processed = labels
+            else:
+                labels_processed = labels
             
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels_processed)
             
             total_loss += loss.item()
             num_batches += 1
@@ -858,7 +817,7 @@ def main(config_path: str):
     logger.info("="*80)
     
     # Load best model
-    best_checkpoint = torch.load(exp_dir / "best_model.pth")
+    best_checkpoint = torch.load(exp_dir / "best_model.pth", weights_only=False)
     model.load_state_dict(best_checkpoint['model_state_dict'])
     
     test_metrics, test_preds, test_targets = validate(
@@ -872,7 +831,7 @@ def main(config_path: str):
     # Save predictions
     if config['evaluation']['save_predictions']:
         predictions_df = pd.DataFrame({
-            'subject_id': test_dataset.subjects,
+            'subject_id': test_dataset.subject_ids,
             'true_label': test_targets,
             'prediction': test_preds if len(test_preds.shape) == 1 else test_preds[:, 0]
         })

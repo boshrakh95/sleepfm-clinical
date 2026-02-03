@@ -64,32 +64,64 @@ class CognitivePredictionDataset(Dataset):
         if embeddings_dir is None:
             embeddings_dir = config['preprocessing']['embeddings_dir']
         if labels_path is None:
-            labels_path = config['task']['labels_path']
+            labels_path = config['data']['labels_path']
         if split_path is None:
-            # Use per-target split file
-            target = config['task']['target']
-            split_path = config['data']['split_path'].replace('.json', f'_{target}.json')
+            split_path = config['data']['split_path']
         
         self.embeddings_dir = Path(embeddings_dir)
         
         # Load labels
         logger.info(f"Loading labels from {labels_path}")
         self.labels_df = pd.read_csv(labels_path)
-        self.labels_df = self.labels_df.set_index('subject_id')
         
-        # Load split
-        logger.info(f"Loading split from {split_path}")
-        split_data = load_data(split_path)
-        subject_ids = split_data[split]
+        # Handle different column name formats (Study ID vs subject_id)
+        if 'Study ID' in self.labels_df.columns:
+            self.labels_df = self.labels_df.set_index('Study ID')
+        elif 'subject_id' in self.labels_df.columns:
+            self.labels_df = self.labels_df.set_index('subject_id')
+        else:
+            raise ValueError(f"Labels CSV must have either 'Study ID' or 'subject_id' column. Found: {self.labels_df.columns.tolist()}")
         
-        # Filter by subjects that have both labels and embeddings
-        valid_subjects = []
-        for subject_id in subject_ids:
-            emb_file = self.embeddings_dir / f"{subject_id}.hdf5"
-            if emb_file.exists() and subject_id in self.labels_df.index:
-                valid_subjects.append(subject_id)
+        # Load split or use available embeddings
+        use_available = config['data'].get('use_available_subjects', False)
         
-        logger.info(f"{split} split: {len(subject_ids)} subjects in split, {len(valid_subjects)} have embeddings and labels")
+        if use_available:
+            # Use all available embeddings, ignoring split file
+            logger.info(f"Using all available embeddings (ignoring split file)")
+            all_embedding_files = list(self.embeddings_dir.glob("*.hdf5"))
+            all_subjects = [f.stem for f in all_embedding_files if f.stem in self.labels_df.index]
+            
+            # Create splits automatically (60% train, 20% val, 20% test)
+            import random
+            random.seed(config['system'].get('seed', 42))
+            random.shuffle(all_subjects)
+            
+            n_train = int(0.6 * len(all_subjects))
+            n_val = int(0.2 * len(all_subjects))
+            
+            if split == 'train':
+                subject_ids = all_subjects[:n_train]
+            elif split == 'val':
+                subject_ids = all_subjects[n_train:n_train+n_val]
+            else:  # test
+                subject_ids = all_subjects[n_train+n_val:]
+            
+            valid_subjects = subject_ids
+            logger.info(f"{split} split (auto-generated): {len(valid_subjects)} subjects from {len(all_subjects)} total")
+        else:
+            # Use predefined split file
+            logger.info(f"Loading split from {split_path}")
+            split_data = load_data(split_path)
+            subject_ids = split_data[split]
+            
+            # Filter by subjects that have both labels and embeddings
+            valid_subjects = []
+            for subject_id in subject_ids:
+                emb_file = self.embeddings_dir / f"{subject_id}.hdf5"
+                if emb_file.exists() and subject_id in self.labels_df.index:
+                    valid_subjects.append(subject_id)
+            
+            logger.info(f"{split} split: {len(subject_ids)} subjects in split, {len(valid_subjects)} have embeddings and labels")
         
         # Apply quality filtering if enabled
         if config['task'].get('use_quality_filter', False):
@@ -100,12 +132,40 @@ class CognitivePredictionDataset(Dataset):
             ]
             logger.info(f"After quality filtering (>={quality_threshold}): {len(valid_subjects)} subjects")
         
+        # Limit number of subjects if specified (for testing)
+        max_files = config['data'].get('max_files', None)
+        if max_files is not None and max_files > 0:
+            valid_subjects = valid_subjects[:max_files]
+            logger.info(f"Limited to {max_files} subjects for testing")
+        
         self.subject_ids = valid_subjects
         
         # Get task parameters
         self.target = config['task']['target']
         self.task_type = config['task']['task_type']
         self.use_demographics = config['task']['use_demographics']
+        
+        # Find demographic column names if needed
+        if self.use_demographics:
+            # Find age column (try: age, Age, AGE, nsrr_age, NSRR_age)
+            self.age_col = None
+            for possible in ['age', 'Age', 'AGE', 'nsrr_age', 'NSRR_age', 'NSRR_AGE']:
+                if possible in self.labels_df.columns:
+                    self.age_col = possible
+                    break
+            if self.age_col is None:
+                raise ValueError(f"Could not find age column in labels. Available columns: {list(self.labels_df.columns)}")
+            
+            # Find gender/sex column (try: gender, Gender, GENDER, sex, Sex, SEX, nsrr_sex, nsrr_gender)
+            self.gender_col = None
+            for possible in ['gender', 'Gender', 'GENDER', 'sex', 'Sex', 'SEX', 'nsrr_sex', 'NSRR_sex', 'nsrr_gender', 'NSRR_gender']:
+                if possible in self.labels_df.columns:
+                    self.gender_col = possible
+                    break
+            if self.gender_col is None:
+                raise ValueError(f"Could not find gender/sex column in labels. Available columns: {list(self.labels_df.columns)}")
+            
+            logger.info(f"Using demographic columns: {self.age_col}, {self.gender_col}")
         
         # Get modality types from config
         self.modality_types = config['data']['modality_types']
@@ -161,8 +221,8 @@ class CognitivePredictionDataset(Dataset):
         
         # Get demographics if needed
         if self.use_demographics:
-            age = self.labels_df.loc[subject_id, 'age']
-            gender = self.labels_df.loc[subject_id, 'gender']
+            age = self.labels_df.loc[subject_id, self.age_col]
+            gender = self.labels_df.loc[subject_id, self.gender_col]
             demo_features = np.array([age, gender], dtype=np.float32)
         else:
             demo_features = None

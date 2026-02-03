@@ -111,5 +111,19 @@
             "console": "integratedTerminal",
             "justMyCode": true
             },
+        {
+            "name": "💹 Fine-tune Cognitive Prediction",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/sleepfm/stages_cognitive_prediction/finetune_cognitive.py",
+            "args": [
+            "--config",
+            "${workspaceFolder}/sleepfm/stages_cognitive_prediction/config_finetune_cognitive.yaml",
+            // "--detailed",
+            // "5"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+            },
     ]
 }

@@ -31,6 +31,7 @@ data:
   sampling_freq: 128
   sampling_duration: 5
   patch_size: 640
+  max_files: 5  # Process only 5 subjects for quick testing
 
 preprocessing:
   embeddings_dir: '/home/boshra95/scratch/stages/sleepfm_format/test_embeddings'
@@ -44,3 +45,39 @@ system:
   num_workers: 1
   batch_size: 2
   pin_memory: false
+  prefetch_factor: 2
+
+# Training configuration
+training:
+  epochs: 2  # Just 2 epochs for testing
+  batch_size: 2
+  optimizer: 'AdamW'
+  lr: 0.0001
+  weight_decay: 0.01
+  loss_function: 'CrossEntropy'  # For classification
+  accumulation_steps: 1
+  max_grad_norm: 1.0
+  use_amp: false  # No mixed precision on CPU
+  scheduler: null  # No scheduler for testing
+  early_stopping:
+    enabled: false
+    patience: 5
+
+# Evaluation configuration
+evaluation:
+  eval_interval: 1  # Evaluate every epoch
+  metrics: ['Accuracy', 'F1', 'AUC']  # For classification
+  primary_metric: 'Accuracy'
+  higher_is_better: true
+  save_predictions: true
+
+# Logging configuration
+logging:
+  output_dir: '/home/boshra95/scratch/stages/sleepfm_format/test_models'
+  experiment_name: 'test_cognitive'
+  log_interval: 1
+  use_wandb: false
+  use_tensorboard: false
+  save_checkpoint_interval: 1
+  save_best_only: true
+  keep_top_k: 1

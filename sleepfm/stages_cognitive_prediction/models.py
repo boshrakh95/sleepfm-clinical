@@ -193,10 +193,16 @@ def create_cognitive_model(config: Dict) -> CognitivePredictionModel:
     model_params = config['model']['params']
     task_config = config['task']
     
-    # Determine number of classes
+    # Determine number of classes based on task type and loss function
     if task_config['task_type'] == 'classification':
-        # For binary classification
-        num_classes = 2
+        # Check loss function to determine output size
+        loss_fn = config.get('training', {}).get('loss_function', 'BCE')
+        if loss_fn in ['BCE', 'BCEWithLogitsLoss', 'FocalLoss']:
+            # Binary classification with BCE-style losses: single output
+            num_classes = 1
+        else:
+            # Multi-class or CrossEntropy: 2 outputs for binary
+            num_classes = 2
     else:
         # For regression
         num_classes = 1
