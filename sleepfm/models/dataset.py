@@ -15,6 +15,7 @@ import pandas as pd
 import json
 from loguru import logger
 from einops import rearrange
+from pathlib import Path
 
 
 def index_file_helper(args):
@@ -62,10 +63,12 @@ class SetTransformerDataset(Dataset):
                  config,
                  channel_groups,
                  hdf5_paths=[],
-                 split="pretrain"):
+                 split="pretrain",
+                 artifact_filter=None):
 
         self.config = config
         self.channel_groups = channel_groups
+        self.artifact_filter = artifact_filter  # Optional artifact filter
         channel_like = []
         for modality_type in config["modality_types"]:
             channel_like += channel_groups[modality_type]
@@ -125,13 +128,51 @@ class SetTransformerDataset(Dataset):
                 for idx, ds_name in enumerate(ds_names):
                     signal = hf[ds_name][chunk_start:chunk_start+self.samples_per_chunk]
                     data[idx] = signal
-                target.append(torch.from_numpy(data).float())
+                
+                # Apply artifact filtering if enabled
+                if self.artifact_filter is not None and self.artifact_filter.enabled:
+                    # Extract subject ID from file path
+                    subject_id = Path(file_path).stem
+                    
+                    # Load master mask for this subject
+                    master_mask = self.artifact_filter.load_master_mask(subject_id)
+                    
+                    if master_mask is not None:
+                        # Filter artifact segments from this chunk
+                        filtered_data, segment_mask = self.artifact_filter.filter_chunk(
+                            data, chunk_start, master_mask
+                        )
+                        
+                        if filtered_data is None:
+                            # All segments are artifacts - return None to signal skip
+                            # This will be handled in collate_fn
+                            target.append(None)
+                        else:
+                            target.append(torch.from_numpy(filtered_data).float())
+                    else:
+                        # No mask available, use original data
+                        target.append(torch.from_numpy(data).float())
+                else:
+                    # No filtering, use original data
+                    target.append(torch.from_numpy(data).float())
+        
+        # Check if any modality returned None (all artifacts)
+        if None in target:
+            return None  # Signal to skip this sample in collate_fn
+        
         return target, file_path, dset_names, chunk_start, self.modalities_length
 
 
 def collate_fn(batch):
+    # Filter out None samples (all-artifact chunks)
+    batch = [item for item in batch if item is not None]
+    
+    if len(batch) == 0:
+        # All samples in batch were filtered out
+        # Return empty batch that can be detected and skipped
+        return None, None, [], [], []
+    
     # Determine the number of modalities
-
     file_paths = [batch[i][1] for i in range(len(batch))]
     dset_names_list = [batch[i][2] for i in range(len(batch))]
     chunk_starts = [batch[i][3] for i in range(len(batch))]
@@ -146,19 +187,38 @@ def collate_fn(batch):
     # Iterate over each modality
     for modality_index in range(num_modalities):
         max_channels = max(data[modality_index].shape[0] for data in batch)
+        # NEW: Find max length (for variable-length filtered sequences)
+        max_length = max(data[modality_index].shape[1] for data in batch)
         
         for data in batch:
             modality_data = data[modality_index]
             channels, length = modality_data.shape
             pad_channels = max_channels - channels
+            pad_length = max_length - length  # NEW: pad temporal dimension too
             
             # Create mask: 0 for real values, 1 for padded values
-            mask = torch.cat((torch.zeros(channels), torch.ones(pad_channels)), dim=0)
-            mask_list[modality_index].append(mask)
+            # Now a 2D mask: [channels, length]
+            channel_mask = torch.cat((torch.zeros(channels), torch.ones(pad_channels)), dim=0)
+            
+            # Expand channel mask to temporal dimension and combine with temporal padding
+            # Real data: mask=0, Padded channels: mask=1, Padded time: mask=1
+            mask_2d = channel_mask.unsqueeze(1).expand(-1, max_length)  # [max_channels, max_length]
+            
+            # Mark padded time steps (for ALL channels including real ones)
+            if pad_length > 0:
+                mask_2d[:, length:] = 1.0  # Mark all padded time as masked
+            
+            mask_list[modality_index].append(mask_2d)
             
             # Pad the channel dimension
-            pad_channel_tensor = torch.zeros((pad_channels, length))
-            modality_data = torch.cat((modality_data, pad_channel_tensor), dim=0)
+            if pad_channels > 0:
+                pad_channel_tensor = torch.zeros((pad_channels, length))
+                modality_data = torch.cat((modality_data, pad_channel_tensor), dim=0)
+            
+            # Pad the temporal dimension (NEW)
+            if pad_length > 0:
+                pad_time_tensor = torch.zeros((modality_data.shape[0], pad_length))
+                modality_data = torch.cat((modality_data, pad_time_tensor), dim=1)
             
             padded_batch_list[modality_index].append(modality_data)
         

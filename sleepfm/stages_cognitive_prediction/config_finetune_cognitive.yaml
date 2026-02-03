@@ -269,6 +269,42 @@ preprocessing:
   sleep_stages_path: null  # Path to sleep stage annotations
 
 # ============================================================================
+# ARTIFACT FILTERING CONFIGURATION
+# ============================================================================
+artifact_filtering:
+  # Enable/disable artifact filtering during embedding generation
+  # When enabled, filters out 30-sec artifact segments BEFORE embedding generation
+  # This is more principled than filtering after embeddings are generated
+  enabled: true  # Set to true to enable artifact filtering
+  
+  # Directory containing master exclusion masks
+  # Masks should be named: {subject_id}_master_exclusion_mask.npy
+  # Each mask is a boolean array of shape (720,) for 720 30-sec segments
+  # 1 = clean segment, 0 = artifact segment
+  master_masks_dir: '/home/boshra95/scratch/stages/stages/processed/master_masks'
+  
+  # Sampling rate of HDF5 data (must match data preprocessing)
+  sampling_rate: 128  # Hz
+  
+  # Duration of each mask segment
+  segment_duration: 30  # seconds
+  
+  # Handling of all-artifact chunks
+  # When a 5-min chunk has all 30-sec segments marked as artifacts:
+  # - 'skip': Skip the chunk entirely (returns None)
+  # - 'keep': Keep the chunk with all segments (ignore mask for that chunk)
+  all_artifact_policy: 'skip'
+  
+  # Minimum clean ratio per chunk
+  # If a chunk has less than this ratio of clean segments, apply all_artifact_policy
+  # 0.0 = accept any chunk with at least 1 clean segment
+  # 0.5 = require at least 50% clean segments
+  min_clean_ratio: 0.2
+  
+  # Logging
+  log_filtering_stats: true  # Log how many segments were filtered per subject
+
+# ============================================================================
 # ADVANCED OPTIONS
 # ============================================================================
 advanced:

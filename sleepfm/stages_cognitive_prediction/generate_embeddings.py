@@ -41,6 +41,10 @@ if sleepfm_root not in sys.path:
 from sleepfm.utils import load_config, load_data, count_parameters
 from sleepfm.models.models import SetTransformer
 from sleepfm.models.dataset import SetTransformerDataset, collate_fn
+from sleepfm.stages_cognitive_prediction.artifact_filtering import (
+    create_artifact_filter,
+    extract_subject_id_from_path
+)
 from torch.utils.data import DataLoader
 
 
@@ -174,6 +178,16 @@ def main(config_path: str):
     embed_dim = checkpoint_config['embed_dim']
     logger.info(f"Modality types: {modality_types}")
     
+    # Initialize artifact filter (if enabled in config)
+    artifact_filter = create_artifact_filter(config)
+    if artifact_filter is not None:
+        logger.info("Artifact filtering enabled:")
+        logger.info(f"  Master masks dir: {artifact_filter.master_masks_dir}")
+        logger.info(f"  Segment duration: {artifact_filter.segment_duration} sec")
+        logger.info(f"  Sampling rate: {artifact_filter.sampling_rate} Hz")
+    else:
+        logger.info("Artifact filtering disabled")
+    
     # Get all HDF5 files from splits
     split_path = config['data']['split_path']
     split_data = load_data(split_path)
@@ -200,7 +214,8 @@ def main(config_path: str):
         checkpoint_config,
         channel_groups,
         hdf5_paths=all_files,
-        split="test"  # Doesn't matter for embedding generation
+        split="test",  # Doesn't matter for embedding generation
+        artifact_filter=artifact_filter  # Pass artifact filter
     )
     
     # Create dataloader
@@ -220,6 +235,7 @@ def main(config_path: str):
     # Generate embeddings
     processed_subjects = set()
     skipped_count = 0
+    filtered_chunks_count = 0
     error_count = 0
     
     with torch.no_grad():
@@ -227,6 +243,11 @@ def main(config_path: str):
             try:
                 # Unpack batch (following demo.py)
                 batch_data, mask_list, file_paths, dset_names_list, chunk_starts = batch
+                
+                # Check if batch was filtered out (all artifacts)
+                if batch_data is None:
+                    filtered_chunks_count += 1
+                    continue
                 
                 # Separate modalities
                 modality_data = {}
@@ -382,6 +403,9 @@ def main(config_path: str):
     logger.info(f"Total files: {len(all_files)}")
     logger.info(f"Processed subjects: {len(processed_subjects)}")
     logger.info(f"Errors: {error_count}")
+    if artifact_filter is not None and artifact_filter.enabled:
+        logger.info(f"Filtered all-artifact chunks: {filtered_chunks_count}")
+        logger.info(f"Artifact filtering was enabled")
     logger.info(f"Output directory: {output_dir}")
     logger.info("="*80)
 
