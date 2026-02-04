@@ -97,6 +97,8 @@ python test_artifact_filtering.py
 2. **Extract subject ID** from file path (e.g., `subject123.hdf5` → `subject123`)
 
 3. **Load master mask** from `{subject_id}_master_exclusion_mask.npy` (720 elements)
+   - **File format**: 0 = clean signal (keep), 1 = artifact (exclude)
+   - **Code inverts it**: True = clean (keep), False = artifact (exclude)
 
 4. **Map chunk to mask indices**:
    - Chunk samples 0-38,400 → mask indices 0:10 (first 10 segments)
@@ -104,8 +106,9 @@ python test_artifact_filtering.py
 
 5. **Filter segments**:
    - Extract mask slice: `chunk_mask = master_mask[0:10]`
-   - Example: `[1,1,0,1,1,1,0,0,1,1]` → 7 clean, 3 artifacts
-   - Keep only clean 30-sec segments (indices where mask==1)
+   - Example file: `[0,0,1,0,0,0,1,1,0,0]` → 7 clean (0s), 3 artifacts (1s)
+   - After inversion: `[True,True,False,True,True,True,False,False,True,True]`
+   - Keep only clean 30-sec segments (indices where mask==True)
    - Concatenate: shape changes from `(channels, 38400)` to `(channels, 26880)`
 
 6. **Handle edge cases**:
@@ -127,7 +130,8 @@ python test_artifact_filtering.py
 
 ### Input
 - Chunk: 5 minutes (38,400 samples at 128 Hz)
-- Mask: `[1,1,0,1,1,1,0,0,1,1]` for segments 0-9
+- Mask file: `[0,0,1,0,0,0,1,1,0,0]` for segments 0-9 (0=clean, 1=artifact)
+- After inversion: `[True,True,False,True,True,True,False,False,True,True]`
 
 ### Filtering
 - Segment 0 (clean): samples 0-3,840 → **KEEP**

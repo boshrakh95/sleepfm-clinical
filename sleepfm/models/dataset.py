@@ -138,9 +138,9 @@ class SetTransformerDataset(Dataset):
                     master_mask = self.artifact_filter.load_master_mask(subject_id)
                     
                     if master_mask is not None:
-                        # Filter artifact segments from this chunk
+                        # Filter artifact segments from this chunk (pass subject_id for stats tracking)
                         filtered_data, segment_mask = self.artifact_filter.filter_chunk(
-                            data, chunk_start, master_mask
+                            data, chunk_start, master_mask, subject_id
                         )
                         
                         if filtered_data is None:
@@ -196,19 +196,16 @@ def collate_fn(batch):
             pad_channels = max_channels - channels
             pad_length = max_length - length  # NEW: pad temporal dimension too
             
-            # Create mask: 0 for real values, 1 for padded values
-            # Now a 2D mask: [channels, length]
+            # Create 1D channel mask: 0 for real channels, 1 for padded channels
+            # Note: The model only supports channel masking, not per-timestep masking
+            # So we mark a channel as masked if it's a padded channel OR if it has any padded time
             channel_mask = torch.cat((torch.zeros(channels), torch.ones(pad_channels)), dim=0)
             
-            # Expand channel mask to temporal dimension and combine with temporal padding
-            # Real data: mask=0, Padded channels: mask=1, Padded time: mask=1
-            mask_2d = channel_mask.unsqueeze(1).expand(-1, max_length)  # [max_channels, max_length]
+            # If there's temporal padding, we need to mark real channels as partially masked
+            # However, the model doesn't support per-timestep masking, so we keep them unmasked
+            # The temporal padding is just zeros which the model will learn to ignore
             
-            # Mark padded time steps (for ALL channels including real ones)
-            if pad_length > 0:
-                mask_2d[:, length:] = 1.0  # Mark all padded time as masked
-            
-            mask_list[modality_index].append(mask_2d)
+            mask_list[modality_index].append(channel_mask)
             
             # Pad the channel dimension
             if pad_channels > 0:

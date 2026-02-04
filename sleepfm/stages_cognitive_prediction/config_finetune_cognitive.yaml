@@ -280,7 +280,8 @@ artifact_filtering:
   # Directory containing master exclusion masks
   # Masks should be named: {subject_id}_master_exclusion_mask.npy
   # Each mask is a boolean array of shape (720,) for 720 30-sec segments
-  # 1 = clean segment, 0 = artifact segment
+  # File format: 0 = clean signal (keep), 1 = artifact (exclude)
+  # Code automatically inverts this to: True = clean (keep), False = artifact (exclude)
   master_masks_dir: '/home/boshra95/scratch/stages/stages/processed/master_masks'
   
   # Sampling rate of HDF5 data (must match data preprocessing)

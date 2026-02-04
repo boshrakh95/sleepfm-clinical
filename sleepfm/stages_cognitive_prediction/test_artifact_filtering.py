@@ -53,13 +53,18 @@ def test_artifact_filter():
     # Create mock chunk data: 10 channels × 38,400 samples (5 min at 128 Hz)
     chunk_data = np.random.randn(10, 38400).astype(np.float32)
     
-    # Create mock master mask: 720 segments (6 hours)
-    # First 5-min chunk (segments 0-9): [1,1,0,1,1,1,0,0,1,1] - 7 clean, 3 artifacts
-    master_mask = np.ones(720, dtype=bool)
-    master_mask[2] = False  # segment 2 is artifact
-    master_mask[6:8] = False  # segments 6-7 are artifacts
+    # Create mock master mask file format: 720 segments (6 hours)
+    # File format: 0 = clean signal, 1 = artifact
+    # First 5-min chunk (segments 0-9): [0,0,1,0,0,0,1,1,0,0] - 7 clean (0s), 3 artifacts (1s)
+    master_mask_file = np.zeros(720, dtype=int)
+    master_mask_file[2] = 1  # segment 2 is artifact
+    master_mask_file[6:8] = 1  # segments 6-7 are artifacts
     
-    print(f"Mock mask for first 10 segments: {master_mask[:10].astype(int)}")
+    print(f"Mock mask file format (0=clean, 1=artifact): {master_mask_file[:10]}")
+    
+    # Simulate load_master_mask which inverts: 0->True (clean), 1->False (artifact)
+    master_mask = (master_mask_file == 0)
+    print(f"After inversion (True=clean, False=artifact): {master_mask[:10].astype(int)}")
     
     # Filter the chunk
     filtered_data, segment_mask = artifact_filter.filter_chunk(chunk_data, 0, master_mask)
@@ -76,16 +81,19 @@ def test_artifact_filter():
     print("\n3. Test all-artifact chunk:")
     print("-" * 40)
     
-    # Create a mask where all segments in the chunk are artifacts
-    master_mask_all_artifacts = np.ones(720, dtype=bool)
-    master_mask_all_artifacts[0:10] = False  # First 10 segments all artifacts
+    # Create a mask file where all segments in the chunk are artifacts (1s)
+    master_mask_file_all_artifacts = np.zeros(720, dtype=int)
+    master_mask_file_all_artifacts[0:10] = 1  # First 10 segments all artifacts
+    
+    # Invert to internal format: 0->True, 1->False
+    master_mask_all_artifacts = (master_mask_file_all_artifacts == 0)
     
     filtered_data, segment_mask = artifact_filter.filter_chunk(
         chunk_data, 0, master_mask_all_artifacts
     )
     
     print(f"Filtered data: {filtered_data}")
-    print(f"Segment mask: {segment_mask.astype(int)}")
+    print(f"Segment mask: {segment_mask.astype(int) if segment_mask is not None else None}")
     
     assert filtered_data is None, "All-artifact chunk should return None"
     print("✓ All-artifact chunk correctly returns None")

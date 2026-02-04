@@ -234,6 +234,7 @@ def main(config_path: str):
     
     # Generate embeddings
     processed_subjects = set()
+    printed_subjects = set()  # Track which subjects we've printed stats for
     skipped_count = 0
     filtered_chunks_count = 0
     error_count = 0
@@ -388,6 +389,15 @@ def main(config_path: str):
                         except Exception as e:
                             logger.error(f"Unexpected error saving granular embeddings for {subject_id}: {e}")
                 
+                # Print filtering summary per subject (only once after processing all chunks)
+                if artifact_filter is not None and artifact_filter.enabled:
+                    for i in range(len(file_paths)):
+                        subject_id = Path(file_paths[i]).stem
+                        # Print stats only once when subject is first fully processed
+                        if subject_id not in printed_subjects and subject_id in processed_subjects:
+                            artifact_filter.print_subject_summary(subject_id)
+                            printed_subjects.add(subject_id)
+                
                 if len(processed_subjects) % 100 == 0:
                     logger.info(f"Processed {len(processed_subjects)} subjects...")
             
@@ -406,6 +416,19 @@ def main(config_path: str):
     if artifact_filter is not None and artifact_filter.enabled:
         logger.info(f"Filtered all-artifact chunks: {filtered_chunks_count}")
         logger.info(f"Artifact filtering was enabled")
+        
+        # Save detailed filtering statistics to CSV
+        stats_file = output_dir / "artifact_filtering_stats.csv"
+        artifact_filter.save_stats_report(str(stats_file))
+        
+        # Print overall summary
+        all_stats = artifact_filter.get_all_stats()
+        if all_stats['subject_stats']:
+            total_segs = sum(s['total_segments'] for s in all_stats['subject_stats'].values())
+            clean_segs = sum(s['clean_segments'] for s in all_stats['subject_stats'].values())
+            clean_pct = (clean_segs / total_segs * 100) if total_segs > 0 else 0
+            logger.info(f"Overall: {clean_segs}/{total_segs} segments clean ({clean_pct:.1f}%)")
+    
     logger.info(f"Output directory: {output_dir}")
     logger.info("="*80)
 

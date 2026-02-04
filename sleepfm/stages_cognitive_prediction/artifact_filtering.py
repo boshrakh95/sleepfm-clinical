@@ -61,6 +61,9 @@ class ArtifactFilter:
         # Cache for loaded masks to avoid repeated disk I/O
         self._mask_cache = {}
         
+        # Statistics tracking per subject
+        self._subject_stats = {}  # {subject_id: {'total_segments': int, 'clean_segments': int, 'chunks_processed': int}}
+        
         logger.info(f"ArtifactFilter initialized:")
         logger.info(f"  Master masks dir: {self.master_masks_dir}")
         logger.info(f"  Sampling rate: {self.sampling_rate} Hz")
@@ -76,7 +79,8 @@ class ArtifactFilter:
             subject_id: Subject identifier
         
         Returns:
-            Boolean array of shape (720,) where 1=clean, 0=artifact
+            Boolean array of shape (720,) where True=clean, False=artifact
+            (inverted from file: file has 0=signal/clean, 1=artifact/exclude)
             Returns None if mask file not found
         """
         # Check cache first
@@ -99,8 +103,10 @@ class ArtifactFilter:
                 logger.warning(f"Invalid mask shape for {subject_id}: {mask.shape}, expected (720,)")
                 return None
             
-            # Convert to boolean if needed (1=clean, 0=artifact)
-            mask = mask.astype(bool)
+            # IMPORTANT: Invert the mask!
+            # File format: 0=signal (clean), 1=artifact (exclude)
+            # We want: True=clean (keep), False=artifact (exclude)
+            mask = (mask == 0)
             
             # Cache the mask
             self._mask_cache[subject_id] = mask
@@ -143,7 +149,8 @@ class ArtifactFilter:
         self,
         chunk_data: np.ndarray,
         chunk_start: int,
-        master_mask: np.ndarray
+        master_mask: np.ndarray,
+        subject_id: str = None
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Filter artifact segments from a chunk.
@@ -151,7 +158,9 @@ class ArtifactFilter:
         Args:
             chunk_data: Signal data of shape (channels, samples)
             chunk_start: Starting sample index of chunk in original recording
-            master_mask: Master exclusion mask (720,) where 1=clean, 0=artifact
+            master_mask: Master exclusion mask (720,) where True=clean, False=artifact
+                        (already inverted from file format in load_master_mask)
+            subject_id: Optional subject ID for statistics tracking
         
         Returns:
             filtered_data: Clean segments concatenated, shape (channels, clean_samples)
@@ -161,7 +170,7 @@ class ArtifactFilter:
         
         Example:
             Input: chunk_data shape (10, 38400) for 5-min chunk
-                   master_mask[0:10] = [1,1,0,1,1,1,0,0,1,1]
+                   master_mask[0:10] = [True,True,False,True,True,True,False,False,True,True]
             Output: filtered_data shape (10, 23040) - 6 clean segments × 3840 samples
                     segment_mask = [True, True, False, True, True, True, False, False, True, True]
         """
@@ -183,9 +192,35 @@ class ArtifactFilter:
         # Find clean segments
         clean_segment_indices = np.where(chunk_mask)[0]
         
+        # Track statistics if subject_id provided
+        if subject_id is not None:
+            if subject_id not in self._subject_stats:
+                self._subject_stats[subject_id] = {
+                    'total_segments': 0,
+                    'clean_segments': 0,
+                    'artifact_segments': 0,
+                    'chunks_processed': 0,
+                    'all_artifact_chunks': 0
+                }
+            
+            # Only count each chunk once (avoid counting per modality)
+            # Use chunk_start as unique identifier
+            if not hasattr(self, '_processed_chunks'):
+                self._processed_chunks = {}
+            if subject_id not in self._processed_chunks:
+                self._processed_chunks[subject_id] = set()
+            
+            if chunk_start not in self._processed_chunks[subject_id]:
+                self._subject_stats[subject_id]['total_segments'] += num_segments
+                self._subject_stats[subject_id]['clean_segments'] += len(clean_segment_indices)
+                self._subject_stats[subject_id]['artifact_segments'] += (num_segments - len(clean_segment_indices))
+                self._subject_stats[subject_id]['chunks_processed'] += 1
+                if len(clean_segment_indices) == 0:
+                    self._subject_stats[subject_id]['all_artifact_chunks'] += 1
+                self._processed_chunks[subject_id].add(chunk_start)
+        
         if len(clean_segment_indices) == 0:
             # All segments are artifacts
-            logger.debug(f"Chunk starting at {chunk_start} has all artifact segments")
             return None, np.zeros(num_segments, dtype=bool)
         
         # Extract clean segments
@@ -205,15 +240,6 @@ class ArtifactFilter:
         
         # Create segment mask (True=kept, False=removed)
         segment_mask = chunk_mask.astype(bool)
-        
-        # Log filtering statistics
-        num_removed = num_segments - len(clean_segment_indices)
-        if num_removed > 0:
-            logger.debug(
-                f"Filtered chunk at {chunk_start}: "
-                f"kept {len(clean_segment_indices)}/{num_segments} segments "
-                f"({len(clean_segment_indices)/num_segments*100:.1f}% clean)"
-            )
         
         return filtered_data, segment_mask
     
@@ -252,26 +278,85 @@ class ArtifactFilter:
                 continue
             
             # Filter chunk
-            filtered_data, segment_mask = self.filter_chunk(data, chunk_start, master_mask)
+            filtered_data, segment_mask = self.filter_chunk(data, chunk_start, master_mask, subject_id)
             
             filtered_batch.append(filtered_data)
             segment_masks.append(segment_mask)
         
         return filtered_batch, segment_masks
     
-    def get_statistics(self) -> Dict:
-        """Get filtering statistics."""
+    def get_subject_stats(self, subject_id: str) -> Optional[Dict]:
+        """Get filtering statistics for a specific subject."""
+        return self._subject_stats.get(subject_id, None)
+    
+    def get_all_stats(self) -> Dict:
+        """Get all filtering statistics."""
         return {
             'enabled': self.enabled,
             'cached_masks': len(self._mask_cache),
+            'subjects_processed': len(self._subject_stats),
+            'subject_stats': self._subject_stats,
             'master_masks_dir': str(self.master_masks_dir),
             'segment_duration': self.segment_duration,
             'sampling_rate': self.sampling_rate
         }
     
+    def print_subject_summary(self, subject_id: str):
+        """Print filtering summary for a subject."""
+        stats = self.get_subject_stats(subject_id)
+        if stats is None:
+            return
+        
+        total = stats['total_segments']
+        clean = stats['clean_segments']
+        artifact = stats['artifact_segments']
+        clean_pct = (clean / total * 100) if total > 0 else 0
+        
+        logger.info(
+            f"Subject {subject_id} filtering: "
+            f"{clean}/{total} segments clean ({clean_pct:.1f}%), "
+            f"{stats['chunks_processed']} chunks processed, "
+            f"{stats['all_artifact_chunks']} all-artifact chunks"
+        )
+    
+    def save_stats_report(self, output_file: str):
+        """Save filtering statistics to a CSV file."""
+        import pandas as pd
+        
+        if not self._subject_stats:
+            logger.warning("No statistics to save")
+            return
+        
+        # Convert to DataFrame
+        records = []
+        for subject_id, stats in self._subject_stats.items():
+            total = stats['total_segments']
+            clean = stats['clean_segments']
+            clean_pct = (clean / total * 100) if total > 0 else 0
+            
+            records.append({
+                'subject_id': subject_id,
+                'total_segments': total,
+                'clean_segments': clean,
+                'artifact_segments': stats['artifact_segments'],
+                'clean_percentage': clean_pct,
+                'chunks_processed': stats['chunks_processed'],
+                'all_artifact_chunks': stats['all_artifact_chunks']
+            })
+        
+        df = pd.DataFrame(records)
+        df.to_csv(output_file, index=False)
+        logger.info(f"Saved filtering statistics to {output_file}")
+    
+    def get_statistics(self) -> Dict:
+        """Get filtering statistics (legacy method)."""
+        return self.get_all_stats()
+    
     def clear_cache(self):
         """Clear the mask cache to free memory."""
         self._mask_cache.clear()
+        if hasattr(self, '_processed_chunks'):
+            self._processed_chunks.clear()
         logger.info("Cleared artifact filter mask cache")
 
 

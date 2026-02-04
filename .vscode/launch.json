@@ -126,7 +126,7 @@
             "justMyCode": true
             },
         {
-            "name": "🈂️ Test Artifact Rejection",
+            "name": "🈂️ Test Artifact Rejection (outside generate_embeddings)",
             "type": "python",
             "request": "launch",
             "program": "${workspaceFolder}/sleepfm/stages_cognitive_prediction/test_artifact_filtering.py",
