@@ -1012,6 +1012,30 @@ if __name__ == "__main__":
         default=None,
         help="Override number of epochs"
     )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=None,
+        help="Override weight decay (L2 regularization)"
+    )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        default=None,
+        help="Override warmup epochs"
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=None,
+        help="Override dropout rate"
+    )
+    parser.add_argument(
+        "--max_grad_norm",
+        type=float,
+        default=None,
+        help="Override gradient clipping norm"
+    )
     
     args = parser.parse_args()
     
@@ -1042,5 +1066,21 @@ if __name__ == "__main__":
     if args.epochs is not None:
         config['training']['epochs'] = args.epochs
         logger.info(f"Overriding epochs: {args.epochs}")
+    
+    if args.weight_decay is not None:
+        config['training']['weight_decay'] = args.weight_decay
+        logger.info(f"Overriding weight_decay: {args.weight_decay}")
+    
+    if args.warmup_epochs is not None:
+        config['training']['warmup_epochs'] = args.warmup_epochs
+        logger.info(f"Overriding warmup_epochs: {args.warmup_epochs}")
+    
+    if args.dropout is not None:
+        config['model']['params']['dropout'] = args.dropout
+        logger.info(f"Overriding dropout: {args.dropout}")
+    
+    if args.max_grad_norm is not None:
+        config['training']['max_grad_norm'] = args.max_grad_norm
+        logger.info(f"Overriding max_grad_norm: {args.max_grad_norm}")
     
     main(config)
