@@ -74,7 +74,7 @@ data:
   quality_path: '/home/boshra95/scratch/stages/sleepfm_format/quality_metadata'
   
   # Split file (will be constructed as dataset_split_{target}.json)
-  split_path: '/home/boshra95/scratch/stages/sleepfm_format/splits/dataset_split_sustained_attention.json'
+  split_path: '/home/boshra95/scratch/stages/sleepfm_format/splits/dataset_split_episodic_memory.json'
   
   # Use available embeddings instead of split file (for testing)
   # When true: ignores split_path and uses all available embedding files
@@ -109,55 +109,61 @@ data:
 # ============================================================================
 training:
   # Training parameters
-  batch_size: 2
-  epochs: 1
+  batch_size: 4
+  epochs: 70
   
   # Optimizer
   optimizer: 'AdamW'
   lr: 0.0001
   weight_decay: 0.01
   
-  # Learning rate scheduler
-  scheduler: 'CosineAnnealingLR'  # or 'ReduceLROnPlateau', 'StepLR'
+  # Learning rate scheduler with warmup
+  # Options: 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts', 'ReduceLROnPlateau'
+  scheduler: 'CosineAnnealingLR'
   scheduler_params:
-    T_max: 1  # for CosineAnnealingLR
-    eta_min: 0.000001
-    # patience: 5  # for ReduceLROnPlateau
-    # factor: 0.5
+    T_max: 100  # Number of epochs for full cosine cycle (should be >= total epochs)
+    eta_min: 0.00001  # Minimum learning rate
+  
+  # Learning rate warmup
+  # Gradually increase LR from 0 to initial LR over first N epochs
+  # Helps stabilize training, especially with large models
+  warmup_epochs: 2  # Number of warmup epochs (0 = no warmup)
+  warmup_start_lr: 0.00001  # Starting LR for warmup (typically 10x smaller than main LR)
   
   # Gradient accumulation
-  accumulation_steps: 4
+  # Effectively increases batch size by factor of N without extra memory
+  # Useful when GPU memory is limited
+  accumulation_steps: 1  # Effective batch_size = 16 * 1 = 16
   
-  # Mixed precision training
-  use_amp: true
+  # Mixed precision training (AMP)
+  # Speeds up training and reduces memory usage
+  # Set to true if using modern GPU (Volta/Turing/Ampere)
+  use_amp: false
   
   # Gradient clipping
-  max_grad_norm: 1.0
+  # Prevents exploding gradients, especially important for RNNs
+  # Clip gradients if their norm exceeds this value
+  max_grad_norm: 2.0  # Standard value: 0.5-5.0
   
   # Early stopping
+  # Stop training if validation metric doesn't improve
   early_stopping:
-    enabled: true
-    patience: 10
-    min_delta: 0.001
+    enabled: false
+    patience: 15  # Stop if no improvement for N epochs (adjust based on total epochs)
+    min_delta: 0.0001  # Minimum change to count as improvement
   
   # Loss function
   # For regression: 'MSE', 'MAE', 'Huber', 'SmoothL1'
   # For classification: 'BCE', 'CrossEntropy', 'FocalLoss'
-  loss_function: 'BCE'
+  loss_function: 'BCE'  # Binary cross-entropy for binary classification
   
-  # For Huber loss
-  huber_delta: 1.0
+  # Huber loss parameters (only used if loss_function='Huber')
+  huber_delta: 1.0  # Transition point between MSE and MAE
   
-  # For Focal loss (classification)
-  focal_alpha: 0.25
-  focal_gamma: 2.0
-  
-  # Regularization
-  l1_lambda: 0.0  # L1 regularization on output layer
-  
-  # Freeze encoder (only train LSTM and output layer)
-  freeze_encoder: false
-  freeze_epochs: 0  # Freeze encoder for first N epochs
+  # Focal loss parameters (only used if loss_function='FocalLoss')
+  # Focal loss helps with class imbalance by down-weighting easy examples
+  focal_alpha: 0.5  # Weight for positive class (0.25 = focus more on hard negatives)
+  focal_gamma: 3.0  # Focusing parameter (higher = more focus on hard examples)
 
 # ============================================================================
 # VALIDATION & EVALUATION
@@ -206,11 +212,11 @@ logging:
   use_tensorboard: false
   
   # Save checkpoints
-  save_checkpoint_interval: 5  # Save every N epochs
-  save_best_only: false  # Also save checkpoints at regular intervals
+  save_checkpoint_interval: 50  # Save every N epochs
+  save_best_only: true  # Also save checkpoints at regular intervals
   
   # Keep top K checkpoints
-  keep_top_k: 3
+  keep_top_k: 1
 
 # ============================================================================
 # SYSTEM CONFIGURATION

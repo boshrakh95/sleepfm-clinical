@@ -372,12 +372,15 @@ def train_epoch(
     
     total_loss = 0.0
     num_batches = 0
+    all_predictions = []
+    all_targets = []
     accumulation_steps = config['training']['accumulation_steps']
     use_amp = config['training']['use_amp']
     log_interval = config['logging']['log_interval']
     use_demographics = config['task']['use_demographics']
     task_type = config['task']['task_type']
     loss_name = config['training']['loss_function']
+    metrics_list = config['evaluation']['metrics']
     
     pbar = tqdm(dataloader, desc=f"Epoch {epoch} [Train]")
     
@@ -459,13 +462,25 @@ def train_epoch(
         total_loss += loss.item() * accumulation_steps
         num_batches += 1
         
+        # Collect predictions and targets for metrics (detach to avoid memory issues)
+        all_predictions.append(outputs.detach().cpu().numpy())
+        all_targets.append(labels.cpu().numpy())
+        
         # Update progress bar
         if batch_idx % log_interval == 0:
             pbar.set_postfix({'loss': f"{loss.item() * accumulation_steps:.4f}"})
     
     avg_loss = total_loss / num_batches
     
-    return {'loss': avg_loss}
+    # Concatenate all predictions and targets
+    predictions = np.concatenate(all_predictions, axis=0)
+    targets = np.concatenate(all_targets, axis=0)
+    
+    # Compute metrics
+    metrics = compute_metrics(predictions, targets, task_type, metrics_list)
+    metrics['loss'] = avg_loss
+    
+    return metrics
 
 
 def validate(
@@ -559,6 +574,53 @@ def validate(
     return metrics, predictions, targets
 
 
+def save_predictions_to_csv(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+    subject_ids: List[str],
+    task_type: str,
+    output_path: Path,
+    split: str = 'test'
+):
+    """Save predictions to CSV file.
+    
+    Args:
+        predictions: Model predictions (logits for classification, values for regression)
+        targets: Ground truth labels/values
+        subject_ids: List of subject IDs
+        task_type: 'classification' or 'regression'
+        output_path: Path to save CSV file
+        split: Split name (train/val/test) for filename
+    """
+    # Flatten predictions if needed
+    if len(predictions.shape) > 1:
+        pred_values = predictions[:, 0]
+    else:
+        pred_values = predictions
+    
+    # Create dataframe
+    df_dict = {
+        'subject_id': subject_ids,
+        'true_label': targets,
+    }
+    
+    if task_type == 'classification':
+        # For classification: convert logits to probabilities using sigmoid
+        pred_probs = torch.sigmoid(torch.from_numpy(pred_values)).numpy()
+        df_dict['predicted_probability'] = pred_probs
+        # Convert probability to class (threshold 0.5 for binary)
+        df_dict['predicted_class'] = (pred_probs > 0.5).astype(int)
+    else:
+        # For regression: just save predicted value
+        df_dict['predicted_value'] = pred_values
+    
+    predictions_df = pd.DataFrame(df_dict)
+    
+    # Save to CSV
+    predictions_df.to_csv(output_path, index=False)
+    logger.info(f"Saved {split} predictions to: {output_path}")
+
+
 def save_checkpoint(
     model: nn.Module,
     optimizer: optim.Optimizer,
@@ -608,14 +670,15 @@ def save_checkpoint(
         logger.info(f"Saved best model: {best_path}")
 
 
-def main(config_path: str):
+def main(config):
     """Main training function.
     
     Args:
-        config_path: Path to configuration YAML file
+        config: Configuration dictionary (either loaded from YAML or passed directly)
     """
-    # Load configuration
-    config = load_config(config_path)
+    # If config is a string path, load it
+    if isinstance(config, str):
+        config = load_config(config)
     
     # Set up logging
     output_dir = Path(config['logging']['output_dir'])
@@ -710,6 +773,7 @@ def main(config_path: str):
     # Create learning rate scheduler
     scheduler_name = config['training'].get('scheduler', None)
     scheduler = None
+    warmup_scheduler = None
     
     if scheduler_name == 'CosineAnnealingLR':
         params = config['training']['scheduler_params']
@@ -727,6 +791,27 @@ def main(config_path: str):
             patience=params.get('patience', 5),
             verbose=True
         )
+    
+    # Add warmup scheduler if configured
+    warmup_epochs = config['training'].get('warmup_epochs', 0)
+    if warmup_epochs > 0 and scheduler is not None:
+        warmup_start_lr = config['training'].get('warmup_start_lr', config['training']['lr'] / 10)
+        # Linear warmup from warmup_start_lr to main lr
+        warmup_scheduler = optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=warmup_start_lr / config['training']['lr'],
+            end_factor=1.0,
+            total_iters=warmup_epochs
+        )
+        # Chain warmup with main scheduler
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, scheduler],
+            milestones=[warmup_epochs]
+        )
+        logger.info(f"Using warmup scheduler: {warmup_epochs} epochs from LR {warmup_start_lr} to {config['training']['lr']}")
+    
+    logger.info(f"Learning rate scheduler: {scheduler_name if scheduler_name else 'None'}")
     
     # Create loss function
     criterion = get_loss_function(config)
@@ -754,6 +839,9 @@ def main(config_path: str):
         )
         
         logger.info(f"Train - Loss: {train_metrics['loss']:.4f}")
+        for metric_name, metric_value in train_metrics.items():
+            if metric_name != 'loss':
+                logger.info(f"Train - {metric_name}: {metric_value:.4f}")
         
         # Validate
         if epoch % config['evaluation']['eval_interval'] == 0:
@@ -811,40 +899,72 @@ def main(config_path: str):
             current_lr = optimizer.param_groups[0]['lr']
             logger.info(f"Learning rate: {current_lr:.2e}")
     
-    # Test evaluation
+    # Final evaluation on all splits with best model
     logger.info("\n" + "="*80)
-    logger.info("Final Test Evaluation")
+    logger.info("Final Evaluation with Best Model")
     logger.info("="*80)
     
     # Load best model
     best_checkpoint = torch.load(exp_dir / "best_model.pth", weights_only=False)
     model.load_state_dict(best_checkpoint['model_state_dict'])
     
+    # Evaluate on all splits
+    all_metrics = {}
+    
+    # Train set
+    logger.info("\nTrain Set Evaluation:")
+    train_metrics, train_preds, train_targets = validate(
+        model, train_loader, criterion, device, config, split='train'
+    )
+    for metric_name, metric_value in train_metrics.items():
+        logger.info(f"  {metric_name}: {metric_value:.4f}")
+    all_metrics['train'] = train_metrics
+    
+    # Validation set
+    logger.info("\nValidation Set Evaluation:")
+    val_metrics, val_preds, val_targets = validate(
+        model, val_loader, criterion, device, config, split='val'
+    )
+    for metric_name, metric_value in val_metrics.items():
+        logger.info(f"  {metric_name}: {metric_value:.4f}")
+    all_metrics['val'] = val_metrics
+    
+    # Test set
+    logger.info("\nTest Set Evaluation:")
     test_metrics, test_preds, test_targets = validate(
         model, test_loader, criterion, device, config, split='test'
     )
-    
-    logger.info(f"\nTest Results:")
     for metric_name, metric_value in test_metrics.items():
         logger.info(f"  {metric_name}: {metric_value:.4f}")
+    all_metrics['test'] = test_metrics
     
-    # Save predictions
+    # Save predictions for all splits
     if config['evaluation']['save_predictions']:
-        predictions_df = pd.DataFrame({
-            'subject_id': test_dataset.subject_ids,
-            'true_label': test_targets,
-            'prediction': test_preds if len(test_preds.shape) == 1 else test_preds[:, 0]
-        })
+        logger.info("\nSaving predictions for all splits...")
         
-        pred_file = exp_dir / "test_predictions.csv"
-        predictions_df.to_csv(pred_file, index=False)
-        logger.info(f"\nSaved predictions to: {pred_file}")
+        # Train predictions
+        save_predictions_to_csv(
+            train_preds, train_targets, train_dataset.subject_ids,
+            config['task']['task_type'], exp_dir / "train_predictions.csv", split='train'
+        )
+        
+        # Validation predictions
+        save_predictions_to_csv(
+            val_preds, val_targets, val_dataset.subject_ids,
+            config['task']['task_type'], exp_dir / "val_predictions.csv", split='val'
+        )
+        
+        # Test predictions
+        save_predictions_to_csv(
+            test_preds, test_targets, test_dataset.subject_ids,
+            config['task']['task_type'], exp_dir / "test_predictions.csv", split='test'
+        )
     
-    # Save test metrics
-    metrics_file = exp_dir / "test_metrics.json"
+    # Save all metrics
+    metrics_file = exp_dir / "final_metrics.json"
     with open(metrics_file, 'w') as f:
-        json.dump(test_metrics, f, indent=2)
-    logger.info(f"Saved test metrics to: {metrics_file}")
+        json.dump(all_metrics, f, indent=2)
+    logger.info(f"\nSaved all metrics to: {metrics_file}")
     
     logger.info("\n" + "="*80)
     logger.info("Training complete!")
@@ -861,7 +981,66 @@ if __name__ == "__main__":
         required=True,
         help="Path to configuration YAML file"
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Override cognitive target (e.g., sustained_attention, working_memory, episodic_memory)"
+    )
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        default=None,
+        choices=['classification', 'regression'],
+        help="Override task type (classification or regression)"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="Override batch size"
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override learning rate"
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Override number of epochs"
+    )
     
     args = parser.parse_args()
     
-    main(args.config)
+    # Load config
+    config = load_config(args.config)
+    
+    # Override config with command-line arguments
+    if args.target is not None:
+        config['task']['target'] = args.target
+        # Update split path to match target
+        config['data']['split_path'] = config['data']['split_path'].replace(
+            config['task']['target'], args.target
+        )
+        logger.info(f"Overriding target: {args.target}")
+    
+    if args.task_type is not None:
+        config['task']['task_type'] = args.task_type
+        logger.info(f"Overriding task_type: {args.task_type}")
+    
+    if args.batch_size is not None:
+        config['training']['batch_size'] = args.batch_size
+        logger.info(f"Overriding batch_size: {args.batch_size}")
+    
+    if args.lr is not None:
+        config['training']['lr'] = args.lr
+        logger.info(f"Overriding learning rate: {args.lr}")
+    
+    if args.epochs is not None:
+        config['training']['epochs'] = args.epochs
+        logger.info(f"Overriding epochs: {args.epochs}")
+    
+    main(config)

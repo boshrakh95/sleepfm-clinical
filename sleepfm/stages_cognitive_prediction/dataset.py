@@ -112,7 +112,19 @@ class CognitivePredictionDataset(Dataset):
             # Use predefined split file
             logger.info(f"Loading split from {split_path}")
             split_data = load_data(split_path)
-            subject_ids = split_data[split]
+            subject_paths = split_data[split]
+            
+            # Extract subject IDs from file paths (handles both full paths and bare subject IDs)
+            subject_ids = []
+            for item in subject_paths:
+                if isinstance(item, str):
+                    # If it's a file path, extract the stem (filename without extension)
+                    if '/' in item or '\\' in item or item.endswith('.hdf5'):
+                        subject_id = Path(item).stem
+                    else:
+                        # Already a bare subject ID
+                        subject_id = item
+                    subject_ids.append(subject_id)
             
             # Filter by subjects that have both labels and embeddings
             valid_subjects = []
